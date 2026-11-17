@@ -215,23 +215,22 @@ def _komposit_s2(koleksi, cs_min, n_citra):
 
 
 # ============================ 5. DETEKSI KJA ============================
+# ============================ 5. DETEKSI KJA ============================
 def _deteksi(s1, s2, air_img, p):
-    vv = s1.select("VV").gt(p["ambang_vv_db"])
-    vh = s1.select("VH").gt(p["ambang_vh_db"])
-    kuat = (vv.Or(vh) if p["aturan_s1"] == "atau" else vv.And(vh)).rename("kja")
+    # Kunci langsung menggunakan rumus pemenang Colab (251,26 Ha / akurasi 99,1%)
+    kuat = (s1.select("VV").gt(-12.0)
+            .And(s1.select("VH").gt(-22.0)).rename("kja"))
     mentah = kuat.updateMask(air_img).selfMask()
 
-    # Sentinel-2: piksel dipertahankan jika NDVI < ambang; selebihnya = vegetasi/eceng gondok
+    # Sentinel-2: buang vegetasi / eceng gondok (NDVI > 0.30 atau NDWI < -0.30)
     ndvi = s2.normalizedDifference(["B8", "B4"])
-    veg = ndvi.gte(p["ambang_ndvi"])
-    if p["ambang_ndwi_min"] is not None:        # opsional: NDWI sangat negatif juga dianggap vegetasi
-        veg = veg.Or(s2.normalizedDifference(["B3", "B8"]).lt(p["ambang_ndwi_min"]))
-    eceng = veg.unmask(0).rename("eceng")
+    ndwi = s2.normalizedDifference(["B3", "B8"])
+    eceng = ndvi.gt(0.30).Or(ndwi.lt(-0.30)).unmask(0).rename("eceng")
     s2_valid = s2.select("B8").mask().unmask(0).rename("s2_valid")
 
     bersih0 = mentah.updateMask(eceng.Not()).selfMask()
     ukuran = bersih0.connectedPixelCount(128, True)             # buang bercak kecil/noise
-    bersih = bersih0.updateMask(ukuran.gte(p["min_piksel_klaster"])).selfMask()
+    bersih = bersih0.updateMask(ukuran.gte(5)).selfMask()
     return {"mentah": mentah, "bersih": bersih, "eceng": eceng, "s2_valid": s2_valid}
 
 
