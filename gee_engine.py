@@ -345,15 +345,20 @@ def _thumbnail(s1, s2, det, imgs, batas, wilayah, dimensi, lengkap):
     garis = (ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(batas)]), 1, 1)
              .visualize(min=0, max=1, palette=["FFFFFF", "FFFFFF"]))
 
-    def latar(i):   # radar abu-abu sebagai dasar, optik RGB di atasnya
-        return (s1[i].visualize(bands=["VV"], min=-25, max=0)
-                .blend(s2[i].visualize(**VIS_RGB)).blend(garis))
+    def latar(i):  # radar abu-abu sebagai dasar, optik RGB di atasnya (aman dari awan)
+        dasar = s1[i].visualize(bands=["VV"], min=-25, max=0)
+        try:
+            if s2[i].bandNames().size().getInfo() >= 3:
+                dasar = dasar.blend(s2[i].visualize(**VIS_RGB))
+        except Exception:
+            pass
+        return dasar.blend(garis)
 
     def biner(img, warna):
-        return img.visualize(min=0, max=1, palette=["000000", warna])
+        return img.unmask(0).visualize(min=0, max=1, palette=["000000", warna])
 
     def url(citra):
-        return citra.getThumbURL({"region": wilayah, "dimensions": dimensi, "format": "png"})
+        return citra.getThumbURL({"region": wilayah, "dimensions": 512, "format": "png"})
 
     f2 = latar(1)
     out = {"kja_t2": url(f2.blend(biner(det[1]["bersih"], WARNA["t2"])))}   # untuk Gemini
