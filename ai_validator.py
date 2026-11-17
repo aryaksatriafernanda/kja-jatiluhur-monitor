@@ -101,8 +101,11 @@ def _unduh_komposit_citra(url_thumbnail: str, timeout_detik: int = 30) -> tuple[
         return buffer.getvalue(), "image/jpeg"
 
 
-def _bangun_prompt_validasi(metrik: dict[str, Any]) -> str:
-    """Menyusun prompt analisis spasial dan visual dengan seluruh konteks metrik."""
+def _bangun_prompt_validasi(
+    metrik: dict[str, Any],
+    detail: dict[str, Any] | None = None,
+) -> str:
+    """Menyusun prompt analisis spasial dan visual dengan seluruh konteks metrik dan detail."""
     minggu_id = metrik.get("minggu_id", "-")
     tgl_s1 = metrik.get("tgl_citra_s1", "-")
     tgl_s2 = metrik.get("tgl_citra_s2", "-")
@@ -112,6 +115,17 @@ def _bangun_prompt_validasi(metrik: dict[str, Any]) -> str:
     petak_tengah = metrik.get("estimasi_petak_tengah", 0)
     petak_maks = metrik.get("estimasi_petak_maks", 0)
     persen_kuota = metrik.get("persen_kuota", 0.0)
+
+    detail_data = detail or {}
+    periode = detail_data.get("periode", {})
+    t1_win = periode.get("t1", {}).get("s1")
+    t2_win = periode.get("t2", {}).get("s1")
+    rentang_t1 = f"{t1_win[0]} s.d. {t1_win[1]}" if isinstance(t1_win, (list, tuple)) and len(t1_win) == 2 else "14 hari sebelumnya"
+    rentang_t2 = f"{t2_win[0]} s.d. {t2_win[1]}" if isinstance(t2_win, (list, tuple)) and len(t2_win) == 2 else "14 hari terakhir"
+
+    perubahan = detail_data.get("perubahan", {})
+    t2_info = detail_data.get("t2", {})
+    peringatan = detail_data.get("peringatan", [])
 
     metrik_tambahan = {
         k: v
@@ -129,18 +143,40 @@ def _bangun_prompt_validasi(metrik: dict[str, Any]) -> str:
             "persen_kuota",
         }
     }
-    info_ekstra = (
-        f"\nMetrik tambahan dari mesin satelit: {json.dumps(metrik_tambahan, ensure_ascii=False)}"
-        if metrik_tambahan
-        else ""
-    )
+
+    blok_detail: list[str] = []
+    if perubahan:
+        blok_detail.append(
+            "Perubahan Spasial T1 ke T2: "
+            f"tetap={perubahan.get('luas_tetap_ha', 0)} Ha, "
+            f"hilang/bergeser={perubahan.get('luas_hilang_bergeser_ha', 0)} Ha, "
+            f"baru={perubahan.get('luas_baru_ha', 0)} Ha, "
+            f"selisih_luas={perubahan.get('selisih_luas_ha', 0)} Ha, "
+            f"selisih_petak={perubahan.get('selisih_petak_tengah', 0)} petak, "
+            f"indikasi_pola=\"{perubahan.get('indikasi_pola', '-')}\"."
+        )
+    if t2_info:
+        blok_detail.append(
+            "Kualitas & Penapisan S2 (T2): "
+            f"jumlah_citra_s1={t2_info.get('jumlah_citra_s1', '-')}, "
+            f"jumlah_citra_s2={t2_info.get('jumlah_citra_s2', '-')}, "
+            f"cakupan_s2_bebas_awan={t2_info.get('cakupan_s2_persen', '-')}% , "
+            f"luas_eceng_dibuang={t2_info.get('luas_eceng_dibuang_ha', '-')} Ha."
+        )
+    if peringatan:
+        blok_detail.append(f"Peringatan Kualitas Citra dari Mesin Satelit: {'; '.join(map(str, peringatan))}")
+    if metrik_tambahan:
+        blok_detail.append(f"Metrik tambahan: {json.dumps(metrik_tambahan, ensure_ascii=False)}")
+
+    info_ekstra = ("\n- " + "\n- ".join(blok_detail)) if blok_detail else ""
 
     return f"""Anda adalah analis penginderaan jauh dan pengawasan sumber daya perairan Waduk Jatiluhur.
-Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit komposit area Keramba Jaring Apung (KJA) terbaru dan mencocokkannya dengan metrik kuantitatif siklus pemantauan 14 hari berikut:
+Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit komposit area Keramba Jaring Apung (KJA) terbaru (dengan overlay KJA T2 berwarna oranye #FF9100) dan mencocokkannya dengan metrik kuantitatif siklus pemantauan 14 hari berikut:
 
 - ID Periode / Minggu: {minggu_id}
-- Tanggal Akuisisi Citra Periode T1 (Sentinel-2 / Sentinel-1): {tgl_s1}
-- Tanggal Akuisisi Citra Periode T2 (Terbaru): {tgl_s2}
+- Rentang Pembandingan: Periode Lalu (T1) = {rentang_t1} vs. Terbaru (T2) = {rentang_t2}
+- Tanggal Akuisisi Radar Sentinel-1 Terbaru pada T2 (tgl_citra_s1): {tgl_s1}
+- Tanggal Akuisisi Optik Sentinel-2 Terbaru pada T2 (tgl_citra_s2, "-" berarti kosong): {tgl_s2}
 - Jumlah Klaster KJA Terdeteksi: {jumlah_klaster} klaster
 - Luas Bersih Terkalibrasi: {luas_bersih_ha} Ha
 - Estimasi Jumlah Petak (Rentang): {petak_min} s.d. {petak_maks} petak (Nilai Tengah: {petak_tengah} petak)
@@ -150,9 +186,9 @@ Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit kompos
 Instruksi Penilaian Wajib:
 1. status_validasi_ai:
    - Pilih "Valid" jika citra memperlihatkan badan air dan susunan geometris KJA secara cukup bersih tanpa tutupan awan tebal atau hamparan eceng gondok yang menutupi klaster utama.
-   - Pilih "Perlu dicek" jika terlihat awan tebal, bayangan awan pekat, haze berat, atau ledakan eceng gondok (gulma air berwarna hijau terang menempel pada rakit KJA) yang berpotensi mengacaukan deteksi satelit.
+   - Pilih "Perlu dicek" jika terlihat awan tebal, bayangan awan pekat, haze berat, ledakan eceng gondok (gulma air berwarna hijau terang menempel pada rakit KJA), atau terdapat peringatan citra S2 kosong/parsial yang berisiko menyebabkan eceng gondok tidak tersaring sempurna.
 2. analisis_pola:
-   - Tulis tepat 2-3 kalimat padat yang menjelaskan interpretasi visual citra, dinamika pergeseran spasial antar-periode (mengacu pada tanggal akuisisi {tgl_s1} dan {tgl_s2}), serta perbandingan langsung estimasi nilai tengah ({petak_tengah} petak) terhadap batas kuota Pemprov Jabar sebesar 11.306 petak ({persen_kuota}%).
+   - Tulis tepat 2-3 kalimat padat yang menjelaskan interpretasi visual citra, dinamika pergeseran spasial antar-periode (T1 {rentang_t1} ke T2 {rentang_t2}, dengan akuisisi S1 {tgl_s1} dan S2 {tgl_s2}), serta perbandingan langsung estimasi nilai tengah ({petak_tengah} petak) terhadap batas kuota Pemprov Jabar sebesar 11.306 petak ({persen_kuota}%).
 3. rekomendasi_pengawasan:
    - Berikan tepat 3 poin rekomendasi aksi lapangan yang konkret, spesifik, dan siap dieksekusi oleh petugas patroli Waduk Jatiluhur (misalnya verifikasi zona padat, pengecekan gulma/awan, atau penertiban klaster baru).
 """
@@ -163,10 +199,12 @@ def validasi_kja_dengan_ai(
     metrik: dict[str, Any],
     api_key: str | None = None,
     max_retries: int = 3,
+    detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Mengunduh gambar komposit satelit dari url_thumbnail dan mengirimkannya bersama
-    angka metrik ke Gemini API (gemini-2.5-flash) menggunakan Structured Outputs.
+    angka metrik (serta detail opsional dari gee_engine.py) ke Gemini API (gemini-2.5-flash)
+    menggunakan Structured Outputs.
 
     Returns:
         dict dengan tepat 3 key:
@@ -176,7 +214,7 @@ def validasi_kja_dengan_ai(
     """
     resolved_key = _resolve_gemini_api_key(api_key)
     image_bytes, mime_type = _unduh_komposit_citra(url_thumbnail)
-    prompt = _bangun_prompt_validasi(metrik)
+    prompt = _bangun_prompt_validasi(metrik, detail=detail)
 
     client = genai.Client(api_key=resolved_key)
     image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)

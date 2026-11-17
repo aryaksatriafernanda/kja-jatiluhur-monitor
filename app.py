@@ -102,6 +102,8 @@ NON_KPI_TEXT_KEYS = {
     "url_thumbnail",
     "waktu_analisis_wib",
     "dijalankan_oleh",
+    "indikasi_pola",
+    "status_kuota",
 }
 
 WIB_TZ = timezone(timedelta(hours=7))
@@ -152,221 +154,216 @@ def inject_modern_clean_css(embed: bool) -> None:
         """
     )
 
-    st.markdown(
-        f"""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
-
-        :root {{
-            --bg-page: #F8FAFC;
-            --bg-card: #FFFFFF;
-            --border-subtle: #E2E8F0;
-            --text-dark: #0F172A;
-            --text-muted: #64748B;
-            --accent-blue: #2563EB;
-            --accent-blue-hover: #1D4ED8;
-        }}
-
-        {hide_chrome}
-
-        .stApp {{
-            background-color: var(--bg-page);
-            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-            color: var(--text-dark);
-        }}
-
-        .block-container {{
-            max-width: 1380px;
-            padding-top: {top_padding} !important;
-            padding-bottom: 2.25rem !important;
-            padding-left: 1.5rem !important;
-            padding-right: 1.5rem !important;
-        }}
-
-        /* Top bar putih minimalis (menggantikan blok header biru tua kaku) */
-        .itc-topbar {{
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-subtle);
-            border-radius: 12px;
-            padding: 14px 20px;
-            margin-bottom: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-        }}
-
-        .itc-topbar-title {{
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--text-dark);
-            letter-spacing: -0.02em;
-            margin: 0;
-            line-height: 1.3;
-        }}
-
-        .itc-topbar-sub {{
-            font-size: 12.5px;
-            color: var(--text-muted);
-            margin: 2px 0 0 0;
-        }}
-
-        /* Tombol pil Mode Admin berwarna biru lembut (#2563EB) */
-        div[data-testid="stButton"] > button[kind="primary"] {{
-            background-color: var(--accent-blue) !important;
-            border: 1px solid var(--accent-blue) !important;
-            color: #FFFFFF !important;
-            border-radius: 9999px !important;
-            font-weight: 600 !important;
-            font-size: 13px !important;
-            padding: 0.45rem 1.05rem !important;
-            box-shadow: none !important;
-            transition: background-color 150ms ease;
-        }}
-
-        div[data-testid="stButton"] > button[kind="primary"]:hover {{
-            background-color: var(--accent-blue-hover) !important;
-            border-color: var(--accent-blue-hover) !important;
-        }}
-
-        div[data-testid="stButton"] > button[kind="secondary"] {{
-            background-color: var(--bg-card) !important;
-            border: 1px solid var(--border-subtle) !important;
-            color: var(--text-dark) !important;
-            border-radius: 9999px !important;
-            font-weight: 600 !important;
-            font-size: 13px !important;
-            padding: 0.45rem 1.05rem !important;
-        }}
-
-        /* Kartu data putih bersih (#FFFFFF) berbingkai halus */
-        .itc-card {{
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-subtle);
-            border-radius: 12px;
-            padding: 18px 20px;
-            margin-bottom: 16px;
-        }}
-
-        .itc-kpi-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-            gap: 14px;
-            margin-bottom: 16px;
-        }}
-
-        .itc-kpi-card {{
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-subtle);
-            border-radius: 12px;
-            padding: 16px 18px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            gap: 6px;
-        }}
-
-        .itc-kpi-label {{
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--text-muted);
-            line-height: 1.35;
-        }}
-
-        .itc-kpi-value {{
-            font-family: 'JetBrains Mono', 'Plus Jakarta Sans', monospace;
-            font-variant-numeric: tabular-nums;
-            font-size: 24px;
-            font-weight: 600;
-            color: var(--text-dark);
-            letter-spacing: -0.02em;
-            line-height: 1.2;
-        }}
-
-        .itc-kpi-meta {{
-            font-size: 12px;
-            color: var(--text-muted);
-            line-height: 1.4;
-        }}
-
-        /* Lencana status Valid / Perlu dicek */
-        .status-badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 4px 10px;
-            border-radius: 9999px;
-            font-size: 12px;
-            font-weight: 600;
-            width: fit-content;
-        }}
-
-        .status-valid {{
-            background-color: #ECFDF5;
-            color: #15803D;
-            border: 1px solid #BBF7D0;
-        }}
-
-        .status-check {{
-            background-color: #FFFBEB;
-            color: #B45309;
-            border: 1px solid #FDE68A;
-        }}
-
-        .itc-section-title {{
-            font-size: 15px;
-            font-weight: 700;
-            color: var(--text-dark);
-            margin: 0 0 4px 0;
-        }}
-
-        .itc-section-desc {{
-            font-size: 12.5px;
-            color: var(--text-muted);
-            margin: 0 0 14px 0;
-        }}
-
-        /* Legenda peta */
-        .map-legend {{
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 16px;
-            padding: 10px 14px;
-            background-color: #F8FAFC;
-            border: 1px solid var(--border-subtle);
-            border-radius: 10px;
-            margin-top: 10px;
-            font-size: 12.5px;
-            color: var(--text-dark);
-        }}
-
-        .legend-item {{
-            display: inline-flex;
-            align-items: center;
-            gap: 7px;
-            font-weight: 500;
-        }}
-
-        .legend-swatch {{
-            width: 12px;
-            height: 12px;
-            border-radius: 3px;
-            display: inline-block;
-            border: 1px solid rgba(15, 23, 42, 0.2);
-        }}
-
-        /* Streamlit native border containers agar selaras */
-        div[data-testid="stVerticalBlockBorderWrapper"] {{
-            background-color: var(--bg-card);
-            border: 1px solid var(--border-subtle) !important;
-            border-radius: 12px !important;
-            padding: 16px 18px !important;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    css_block = f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+:root {{
+  --bg-page: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --border-subtle: #E2E8F0;
+  --text-dark: #0F172A;
+  --text-muted: #64748B;
+  --accent-blue: #2563EB;
+  --accent-blue-hover: #1D4ED8;
+}}
+{hide_chrome}
+html, body, .stApp {{
+  color-scheme: light !important;
+  background-color: var(--bg-page) !important;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+  color: var(--text-dark) !important;
+}}
+.block-container {{
+  max-width: 1380px;
+  padding-top: {top_padding} !important;
+  padding-bottom: 2.25rem !important;
+  padding-left: 1.5rem !important;
+  padding-right: 1.5rem !important;
+}}
+.itc-topbar-title {{
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-dark);
+  letter-spacing: -0.02em;
+  margin: 0;
+  line-height: 1.3;
+}}
+.itc-topbar-sub {{
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 2px 0 0 0;
+}}
+/* Paksa tampilan terang bersih pada input, select, dan label form Streamlit */
+[data-testid="stWidgetLabel"] p,
+[data-testid="stWidgetLabel"] label,
+.stMarkdown p,
+.stMarkdown h1,
+.stMarkdown h2,
+.stMarkdown h3,
+.stMarkdown h4 {{
+  color: var(--text-dark) !important;
+}}
+[data-baseweb="input"],
+[data-baseweb="base-input"],
+[data-baseweb="select"] > div {{
+  background-color: #FFFFFF !important;
+  border-color: #CBD5E1 !important;
+  color: #0F172A !important;
+  border-radius: 8px !important;
+}}
+[data-baseweb="input"] input,
+[data-baseweb="base-input"] input,
+input[type="password"],
+input[type="text"],
+input[type="number"] {{
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  -webkit-text-fill-color: #0F172A !important;
+}}
+[data-testid="stForm"] {{
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 10px !important;
+  background-color: #F8FAFC !important;
+  padding: 16px !important;
+}}
+/* Tombol pil biru lembut (#2563EB) untuk tombol primary maupun form submit */
+div[data-testid="stButton"] > button[kind="primary"],
+div[data-testid="stFormSubmitButton"] > button,
+div[data-testid="stFormSubmitButton"] > button[kind="primary"],
+div[data-testid="stFormSubmitButton"] > button[kind="secondaryFormSubmit"] {{
+  background-color: var(--accent-blue) !important;
+  border: 1px solid var(--accent-blue) !important;
+  color: #FFFFFF !important;
+  border-radius: 9999px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  padding: 0.45rem 1.1rem !important;
+  box-shadow: none !important;
+  transition: background-color 150ms ease;
+}}
+div[data-testid="stButton"] > button[kind="primary"]:hover,
+div[data-testid="stFormSubmitButton"] > button:hover {{
+  background-color: var(--accent-blue-hover) !important;
+  border-color: var(--accent-blue-hover) !important;
+}}
+div[data-testid="stButton"] > button[kind="secondary"] {{
+  background-color: var(--bg-card) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-dark) !important;
+  border-radius: 9999px !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  padding: 0.45rem 1.05rem !important;
+}}
+.itc-card {{
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}}
+.itc-kpi-grid {{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}}
+.itc-kpi-card {{
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+}}
+.itc-kpi-label {{
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  line-height: 1.35;
+}}
+.itc-kpi-value {{
+  font-family: 'JetBrains Mono', 'Plus Jakarta Sans', monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-dark);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}}
+.itc-kpi-meta {{
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}}
+.status-badge {{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  width: fit-content;
+}}
+.status-valid {{
+  background-color: #ECFDF5;
+  color: #15803D;
+  border: 1px solid #BBF7D0;
+}}
+.status-check {{
+  background-color: #FFFBEB;
+  color: #B45309;
+  border: 1px solid #FDE68A;
+}}
+.itc-section-title {{
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-dark);
+  margin: 0 0 4px 0;
+}}
+.itc-section-desc {{
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin: 0 0 14px 0;
+}}
+.map-legend {{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 14px;
+  background-color: #F8FAFC;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-dark);
+}}
+.legend-item {{
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 500;
+}}
+.legend-swatch {{
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+}}
+div[data-testid="stVerticalBlockBorderWrapper"] {{
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: 12px !important;
+  padding: 16px 18px !important;
+}}
+</style>
+"""
+    st.markdown(css_block, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -387,15 +384,7 @@ def init_earth_engine() -> tuple[bool, str]:
     """Menginisialisasi Google Earth Engine otomatis dari st.secrets['gcp_service_account']."""
     try:
         sa_info = _get_service_account_dict()
-        credentials = ee.ServiceAccountCredentials(
-            email=sa_info["client_email"],
-            key_data=json.dumps(sa_info),
-        )
-        project_id = sa_info.get("project_id")
-        if project_id:
-            ee.Initialize(credentials=credentials, project=project_id)
-        else:
-            ee.Initialize(credentials=credentials)
+        gee_engine.inisialisasi_ee(sa_info)
         return True, "Google Earth Engine terhubung."
     except Exception as exc:
         return False, f"Inisialisasi GEE gagal: {exc}"
@@ -563,6 +552,7 @@ def simpan_hasil_ke_sheets(
     metrik: dict[str, Any],
     hasil_ai: dict[str, Any],
     url_thumbnail: str,
+    detail: dict[str, Any] | None = None,
     t1_awal: str = "",
     t1_akhir: str = "",
     t2_awal: str = "",
@@ -581,7 +571,22 @@ def simpan_hasil_ke_sheets(
         sheet_headers = list(STANDARD_RIWAYAT_HEADERS)
         ws.append_row(sheet_headers, value_input_option="USER_ENTERED")
 
-    # Baca baris sebelumnya untuk menghitung delta_luas_ha & delta_petak otomatis bila tidak ada di metrik
+    # Ekstrak rentang periode dan metrik perubahan langsung dari gee_engine.py (sertakan_detail=True)
+    detail_data = detail or {}
+    periode = detail_data.get("periode", {})
+    t1_s1 = periode.get("t1", {}).get("s1")
+    t2_s1 = periode.get("t2", {}).get("s1")
+    if isinstance(t1_s1, (list, tuple)) and len(t1_s1) == 2:
+        t1_awal = t1_awal or str(t1_s1[0])
+        t1_akhir = t1_akhir or str(t1_s1[1])
+    if isinstance(t2_s1, (list, tuple)) and len(t2_s1) == 2:
+        t2_awal = t2_awal or str(t2_s1[0])
+        t2_akhir = t2_akhir or str(t2_s1[1])
+
+    perubahan = detail_data.get("perubahan", {})
+    t2_info = detail_data.get("t2", {})
+
+    # Baca baris sebelumnya sebagai cadangan delta jika detail perubahan tidak tersedia
     prev_records = ws.get_all_records()
     prev_row: dict[str, Any] = prev_records[-1] if prev_records else {}
 
@@ -596,6 +601,9 @@ def simpan_hasil_ke_sheets(
     else:
         auto_delta_luas = 0.0
         auto_delta_petak = 0
+
+    delta_luas_val = perubahan.get("selisih_luas_ha", metrik.get("delta_luas_ha", auto_delta_luas))
+    delta_petak_val = perubahan.get("selisih_petak_tengah", metrik.get("delta_petak", auto_delta_petak))
 
     rekomendasi_list = [
         str(item).strip()
@@ -617,8 +625,16 @@ def simpan_hasil_ke_sheets(
         "klaster_baru": metrik.get("klaster_baru", 0),
         "klaster_hilang": metrik.get("klaster_hilang", 0),
         "klaster_bergeser": metrik.get("klaster_bergeser", 0),
-        "delta_luas_ha": metrik.get("delta_luas_ha", auto_delta_luas),
-        "delta_petak": metrik.get("delta_petak", auto_delta_petak),
+        "delta_luas_ha": delta_luas_val,
+        "delta_petak": delta_petak_val,
+        "luas_tetap_ha": perubahan.get("luas_tetap_ha", 0.0),
+        "luas_hilang_bergeser_ha": perubahan.get("luas_hilang_bergeser_ha", 0.0),
+        "luas_baru_ha": perubahan.get("luas_baru_ha", 0.0),
+        "indikasi_pola": perubahan.get("indikasi_pola", ""),
+        "cakupan_s2_persen": t2_info.get("cakupan_s2_persen", ""),
+        "luas_eceng_dibuang_ha": t2_info.get("luas_eceng_dibuang_ha", ""),
+        "selisih_kuota_petak": t2_info.get("selisih_kuota_petak", ""),
+        "status_kuota": t2_info.get("status_kuota", ""),
         "status_validasi_ai": hasil_ai.get("status_validasi_ai", "Perlu dicek"),
         "ringkasan_ai": hasil_ai.get("analisis_pola", ""),
         "rekomendasi_ai": rekomendasi_gabungan,
@@ -685,8 +701,11 @@ def _add_ee_tile_layer(
     ).add_to(fmap)
 
 
-def bangun_peta_interaktif(layers_peta: dict[str, Any] | None) -> folium.Map:
-    """Membangun peta Folium berbasemap Esri.WorldImagery (tanpa CARTO) dengan 5 kelompok layer."""
+def bangun_peta_interaktif(
+    layers_peta: dict[str, Any] | None,
+    gee_ok: bool = False,
+) -> folium.Map:
+    """Membangun peta Folium berbasemap Esri.WorldImagery selaras dengan warna gee_engine.py."""
     fmap = folium.Map(
         location=JATILUHUR_CENTER,
         zoom_start=13,
@@ -706,13 +725,13 @@ def bangun_peta_interaktif(layers_peta: dict[str, Any] | None) -> folium.Map:
 
     if layers_peta:
         layer_specs = [
-            ("s2_t1", "Sentinel-2 RGB (T1)", False, {}),
-            ("s2_t2", "Sentinel-2 RGB (T2)", False, {}),
-            ("kja_t1", "KJA Periode Lalu (T1)", False, {"palette": ["#38BDF8"]}),
-            ("kja_t2", "KJA Terbaru (T2)", False, {"palette": ["#2563EB"]}),
-            ("tetap", "Perubahan: KJA Tetap (Kuning)", True, {"palette": ["#EAB308"]}),
-            ("bergeser", "Perubahan: KJA Bergeser (Merah)", True, {"palette": ["#DC2626"]}),
-            ("baru", "Perubahan: KJA Baru (Hijau)", True, {"palette": ["#16A34A"]}),
+            ("s2_t1", "Sentinel-2 RGB (T1)", False, {"bands": ["B4", "B3", "B2"], "min": 0, "max": 2500, "gamma": 1.3}),
+            ("s2_t2", "Sentinel-2 RGB (T2)", False, {"bands": ["B4", "B3", "B2"], "min": 0, "max": 2500, "gamma": 1.3}),
+            ("kja_t1", "KJA Periode Lalu (T1 - Cyan)", False, {"min": 0, "max": 1, "palette": ["000000", "00E5FF"]}),
+            ("kja_t2", "KJA Terbaru (T2 - Oranye)", False, {"min": 0, "max": 1, "palette": ["000000", "FF9100"]}),
+            ("tetap", "Perubahan: KJA Tetap (Kuning)", True, {"min": 0, "max": 1, "palette": ["000000", "FFD600"]}),
+            ("bergeser", "Perubahan: KJA Hilang/Bergeser (Merah)", True, {"min": 0, "max": 1, "palette": ["000000", "D50000"]}),
+            ("baru", "Perubahan: KJA Baru (Hijau)", True, {"min": 0, "max": 1, "palette": ["000000", "00C853"]}),
         ]
         for key, label, default_show, fallback_vis in layer_specs:
             ee_img, vis = _extract_ee_layer_entry(layers_peta, key)
@@ -727,6 +746,13 @@ def bangun_peta_interaktif(layers_peta: dict[str, Any] | None) -> folium.Map:
                     )
                 except Exception as exc:
                     st.warning(f"Layer '{label}' tidak dapat dirender: {exc}")
+
+    if gee_ok:
+        try:
+            s, w, n, e = gee_engine.ambil_bbox_waduk()
+            fmap.fit_bounds([[s, w], [n, e]])
+        except Exception:
+            pass
 
     folium.LayerControl(collapsed=False, position="topright").add_to(fmap)
     return fmap
@@ -757,8 +783,9 @@ def render_kpi_dinamis(
     metrik: dict[str, Any],
     status_ai: str,
     kuota_pemprov: int,
+    detail: dict[str, Any] | None = None,
 ) -> None:
-    """Merender kartu KPI putih bersih secara dinamis mengikuti seluruh output metrik."""
+    """Merender kartu KPI putih bersih secara dinamis mengikuti seluruh output metrik & detail."""
     minggu_id = metrik.get("minggu_id", "-")
     tgl_s1 = metrik.get("tgl_citra_s1", "-")
     tgl_s2 = metrik.get("tgl_citra_s2", "-")
@@ -769,60 +796,53 @@ def render_kpi_dinamis(
     petak_maks = metrik.get("estimasi_petak_maks", 0)
     persen_kuota = metrik.get("persen_kuota", 0.0)
 
+    detail_data = detail or {}
+    periode = detail_data.get("periode", {})
+    t1_s1 = periode.get("t1", {}).get("s1")
+    t2_s1 = periode.get("t2", {}).get("s1")
+    t1_awal = t1_s1[0] if isinstance(t1_s1, (list, tuple)) and len(t1_s1) == 2 else metrik.get("t1_awal", "")
+    t1_akhir = t1_s1[1] if isinstance(t1_s1, (list, tuple)) and len(t1_s1) == 2 else metrik.get("t1_akhir", "")
+    t2_awal = t2_s1[0] if isinstance(t2_s1, (list, tuple)) and len(t2_s1) == 2 else metrik.get("t2_awal", "")
+    t2_akhir = t2_s1[1] if isinstance(t2_s1, (list, tuple)) and len(t2_s1) == 2 else metrik.get("t2_akhir", "")
+
+    if t1_awal and t1_akhir and t2_awal and t2_akhir:
+        periode_line = f"Periode Lalu (T1): {t1_awal} s.d. {t1_akhir} &bull; Terbaru (T2): {t2_awal} s.d. {t2_akhir}<br/>"
+    else:
+        periode_line = ""
+
+    perubahan = detail_data.get("perubahan", {})
+    delta_petak = perubahan.get("selisih_petak_tengah", metrik.get("delta_petak"))
+    delta_luas = perubahan.get("selisih_luas_ha", metrik.get("delta_luas_ha"))
+    delta_petak_txt = (
+        f" ({'+' if _to_int_safe(delta_petak) >= 0 else ''}{_fmt_int(delta_petak)})"
+        if delta_petak not in (None, "")
+        else ""
+    )
+    delta_luas_txt = (
+        f" ({'+' if _to_float_safe(delta_luas) >= 0 else ''}{_fmt_float(delta_luas, 2)} Ha)"
+        if delta_luas not in (None, "")
+        else ""
+    )
+
     status_class = "status-valid" if status_ai == "Valid" else "status-check"
     status_label = status_ai if status_ai in ("Valid", "Perlu dicek") else "Belum divalidasi AI"
 
     cards_html = [
-        f"""
-        <div class="itc-kpi-card">
-          <div class="itc-kpi-label">Periode &amp; Akuisisi Satelit</div>
-          <div class="itc-kpi-value">{minggu_id}</div>
-          <div class="itc-kpi-meta">Periode Lalu (T1): {tgl_s1} &bull; Terbaru (T2): {tgl_s2}</div>
-        </div>
-        """,
-        f"""
-        <div class="itc-kpi-card">
-          <div class="itc-kpi-label">Estimasi Petak (Nilai Tengah)</div>
-          <div class="itc-kpi-value">{_fmt_int(petak_tengah)}</div>
-          <div class="itc-kpi-meta">Rentang: {_fmt_int(petak_min)} s.d. {_fmt_int(petak_maks)} petak</div>
-        </div>
-        """,
-        f"""
-        <div class="itc-kpi-card">
-          <div class="itc-kpi-label">Beban Terhadap Kuota Pemprov</div>
-          <div class="itc-kpi-value">{_fmt_float(persen_kuota, 1)}%</div>
-          <div class="itc-kpi-meta">Batas kuota: {_fmt_int(kuota_pemprov)} petak</div>
-        </div>
-        """,
-        f"""
-        <div class="itc-kpi-card">
-          <div class="itc-kpi-label">Luas Bersih &amp; Klaster KJA</div>
-          <div class="itc-kpi-value">{_fmt_float(luas_ha, 2)} Ha</div>
-          <div class="itc-kpi-meta">{_fmt_int(klaster)} klaster spasial terdeteksi</div>
-        </div>
-        """,
-        f"""
-        <div class="itc-kpi-card">
-          <div class="itc-kpi-label">Validasi Multimodal AI</div>
-          <div><span class="status-badge {status_class}">{status_label}</span></div>
-          <div class="itc-kpi-meta">Pemeriksaan awan &amp; eceng gondok (Gemini)</div>
-        </div>
-        """,
+        f'<div class="itc-kpi-card"><div class="itc-kpi-label">Periode &amp; Akuisisi Satelit</div><div class="itc-kpi-value">{minggu_id}</div><div class="itc-kpi-meta">{periode_line}Radar S1 (T2): {tgl_s1} &bull; Optik S2 (T2): {tgl_s2}</div></div>',
+        f'<div class="itc-kpi-card"><div class="itc-kpi-label">Estimasi Petak (Nilai Tengah)</div><div class="itc-kpi-value">{_fmt_int(petak_tengah)}</div><div class="itc-kpi-meta">Rentang: {_fmt_int(petak_min)} s.d. {_fmt_int(petak_maks)} petak{delta_petak_txt}</div></div>',
+        f'<div class="itc-kpi-card"><div class="itc-kpi-label">Beban Terhadap Kuota Pemprov</div><div class="itc-kpi-value">{_fmt_float(persen_kuota, 1)}%</div><div class="itc-kpi-meta">Batas kuota: {_fmt_int(kuota_pemprov)} petak</div></div>',
+        f'<div class="itc-kpi-card"><div class="itc-kpi-label">Luas Bersih &amp; Klaster KJA</div><div class="itc-kpi-value">{_fmt_float(luas_ha, 2)} Ha</div><div class="itc-kpi-meta">{_fmt_int(klaster)} klaster spasial{delta_luas_txt}</div></div>',
+        f'<div class="itc-kpi-card"><div class="itc-kpi-label">Validasi Multimodal AI</div><div><span class="status-badge {status_class}">{status_label}</span></div><div class="itc-kpi-meta">Pemeriksaan awan &amp; eceng gondok (Gemini)</div></div>',
     ]
 
-    # Tambahkan kartu KPI otomatis jika gee_engine.py atau sheet memiliki metrik numerik/tambahan lainnya
+    # Tambahkan kartu KPI otomatis jika sheet memiliki metrik numerik tambahan di luar kartu inti
+    skip_auto_keys = CORE_KPI_KEYS | NON_KPI_TEXT_KEYS | {"delta_petak", "delta_luas_ha"}
     for key, value in metrik.items():
-        if key in CORE_KPI_KEYS or key in NON_KPI_TEXT_KEYS:
+        if key in skip_auto_keys or value in (None, ""):
             continue
         formatted = _fmt_float(value, 2) if isinstance(value, float) else (_fmt_int(value) if isinstance(value, int) else str(value))
         cards_html.append(
-            f"""
-            <div class="itc-kpi-card">
-              <div class="itc-kpi-label">{_humanize_key(key)}</div>
-              <div class="itc-kpi-value">{formatted}</div>
-              <div class="itc-kpi-meta">Metrik pemantauan terpantau</div>
-            </div>
-            """
+            f'<div class="itc-kpi-card"><div class="itc-kpi-label">{_humanize_key(key)}</div><div class="itc-kpi-value">{formatted}</div><div class="itc-kpi-meta">Metrik pemantauan terpantau</div></div>'
         )
 
     st.markdown(f'<div class="itc-kpi-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
@@ -837,25 +857,24 @@ def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
     luas_tengah = _fmt_float(config.get("luas_petak_tengah_m2", 50.0), 2)
     luas_maks = _fmt_float(config.get("luas_petak_maks_m2", 52.0), 2)
 
-    st.markdown(
-        f"""
-        <div class="itc-card" style="padding: 14px 18px;">
-          <div style="font-size: 13px; font-weight: 700; color: #0F172A; margin-bottom: 4px;">
-            Catatan Metodologi &amp; Kalibrasi Penginderaan Jauh
-          </div>
-          <div style="font-size: 12.5px; color: #64748B; line-height: 1.55;">
-            Angka jumlah petak dan luasan KJA merupakan hasil estimasi penginderaan jauh satelit Sentinel-2 siklus 14 hari
-            yang telah terkalibrasi terhadap data sensus lapangan tahun <strong>{tahun_kalibrasi}</strong> sebesar
-            <strong>{sensus_petak} petak ({sensus_ha} Ha)</strong>
-            dengan tingkat akurasi empiris ~99% (asumsi luasan efektif per petak {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;).
-            Pada setiap perbandingan siklus, <strong>T1 adalah kondisi periode sebelumnya (14 hari lalu)</strong> dan
-            <strong>T2 adalah kondisi pemantauan terbaru</strong>. Data ini berfungsi sebagai
-            <strong>sistem peringatan dini (early warning system)</strong> untuk mendukung verifikasi patroli lapangan pengawas Waduk Jatiluhur.
-          </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    html_disclaimer = (
+        '<div class="itc-card" style="padding: 14px 18px;">'
+        '<div style="font-size: 13px; font-weight: 700; color: #0F172A; margin-bottom: 4px;">'
+        'Catatan Metodologi &amp; Kalibrasi Penginderaan Jauh'
+        '</div>'
+        '<div style="font-size: 12.5px; color: #64748B; line-height: 1.55;">'
+        'Angka jumlah petak dan luasan KJA merupakan hasil estimasi fusi satelit '
+        '<strong>Sentinel-1 SAR (radar 14 hari)</strong> dan <strong>Sentinel-2 optik (penapisan eceng gondok 45 hari)</strong> '
+        f'yang telah terkalibrasi terhadap data sensus lapangan tahun <strong>{tahun_kalibrasi}</strong> sebesar '
+        f'<strong>{sensus_petak} petak ({sensus_ha} Ha)</strong> '
+        f'dengan tingkat akurasi empiris ~99% (asumsi luasan efektif per petak {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;). '
+        'Pada setiap perbandingan siklus, <strong>T1 adalah kondisi periode sebelumnya (14 hari lalu)</strong> dan '
+        '<strong>T2 adalah kondisi pemantauan terbaru</strong>. Data ini berfungsi sebagai '
+        '<strong>sistem peringatan dini (early warning system)</strong> untuk mendukung verifikasi patroli lapangan pengawas Waduk Jatiluhur.'
+        '</div>'
+        '</div>'
     )
+    st.markdown(html_disclaimer, unsafe_allow_html=True)
 
 
 def render_grafik_historis(df: pd.DataFrame, kuota_pemprov: int) -> None:
@@ -969,31 +988,26 @@ def main() -> None:
     df_riwayat, sheets_err = muat_riwayat_sheets()
     kuota_pemprov = int(config.get("kuota_petak_pemprov", 11306))
 
-    # Top bar putih minimalis (judul di kiri, kontrol Mode Admin biru lembut #2563EB di kanan)
-    col_title, col_admin = st.columns([5, 1.6], vertical_alignment="center")
-    with col_title:
-        mode_text = "Mode Admin Aktif" if st.session_state["is_admin"] else "Akses Publik (Read-Only)"
-        st.markdown(
-            f"""
-            <div class="itc-topbar" style="margin-bottom: 0;">
-              <div>
-                <h1 class="itc-topbar-title">Pemantauan Keramba Jaring Apung (KJA) Waduk Jatiluhur</h1>
-                <p class="itc-topbar-sub">Pemantauan Satelit Siklus 14 Hari &middot; {mode_text}</p>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    # Top bar putih minimalis terpadu (judul di kiri, kontrol Mode Admin biru lembut #2563EB di kanan)
+    with st.container(border=True):
+        col_title, col_admin = st.columns([5.2, 1.5], vertical_alignment="center")
+        with col_title:
+            mode_text = "Mode Admin Aktif" if st.session_state["is_admin"] else "Akses Publik (Read-Only)"
+            st.markdown(
+                f'<div><div class="itc-topbar-title">Pemantauan Keramba Jaring Apung (KJA) Waduk Jatiluhur</div>'
+                f'<div class="itc-topbar-sub">Pemantauan Satelit Siklus 14 Hari &middot; {mode_text}</div></div>',
+                unsafe_allow_html=True,
+            )
 
-    with col_admin:
-        if st.session_state["is_admin"]:
-            if st.button("Keluar Mode Admin", type="secondary", use_container_width=True):
-                st.session_state["is_admin"] = False
-                st.session_state["show_admin_login"] = False
-                st.rerun()
-        else:
-            if st.button("Mode Admin", type="primary", use_container_width=True):
-                st.session_state["show_admin_login"] = not st.session_state["show_admin_login"]
+        with col_admin:
+            if st.session_state["is_admin"]:
+                if st.button("Keluar Mode Admin", type="secondary", use_container_width=True):
+                    st.session_state["is_admin"] = False
+                    st.session_state["show_admin_login"] = False
+                    st.rerun()
+            else:
+                if st.button("Mode Admin", type="primary", use_container_width=True):
+                    st.session_state["show_admin_login"] = not st.session_state["show_admin_login"]
 
     # Panel Login Mode Admin (menggunakan st.secrets["ADMIN_PASSWORD"])
     if st.session_state["show_admin_login"] and not st.session_state["is_admin"]:
@@ -1021,20 +1035,29 @@ def main() -> None:
         with st.container(border=True):
             st.markdown('<div class="itc-section-title">Panel Eksekusi Analisis Berkala (Siklus 14 Hari)</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="itc-section-desc">Menjalankan pemetaan Google Earth Engine, validasi visual Gemini 2.5 Flash, dan penyimpanan otomatis ke Google Sheets.</div>',
+                '<div class="itc-section-desc">Menjalankan mesin pemetaan Google Earth Engine (gee_engine.py), validasi visual Gemini 2.5 Flash, dan penyimpanan otomatis ke Google Sheets.</div>',
                 unsafe_allow_html=True,
             )
 
             today = date.today()
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                t1_awal = st.date_input("T1 Awal", value=today - timedelta(days=28))
+                tgl_akhir_t2 = st.date_input("Tgl Akhir Periode Terbaru (T2)", value=today)
             with c2:
-                t1_akhir = st.date_input("T1 Akhir", value=today - timedelta(days=15))
+                jendela_s1_hari = st.number_input("Jendela Radar S1 (hari)", min_value=7, max_value=30, value=14, step=1)
             with c3:
-                t2_awal = st.date_input("T2 Awal", value=today - timedelta(days=14))
+                jendela_s2_hari = st.number_input("Jendela Optik S2 (hari)", min_value=14, max_value=90, value=45, step=1)
             with c4:
-                t2_akhir = st.date_input("T2 Akhir", value=today)
+                jarak_t1_hari = st.number_input("Jarak Periode Lalu T1 (hari)", min_value=7, max_value=30, value=14, step=1)
+
+            t2_akhir_dt = tgl_akhir_t2
+            t2_awal_dt = t2_akhir_dt - timedelta(days=int(jendela_s1_hari) - 1)
+            t1_akhir_dt = t2_akhir_dt - timedelta(days=int(jarak_t1_hari))
+            t1_awal_dt = t1_akhir_dt - timedelta(days=int(jendela_s1_hari) - 1)
+            st.caption(
+                f"Rentang radar T1 (Periode Lalu): {t1_awal_dt.isoformat()} s.d. {t1_akhir_dt.isoformat()} • "
+                f"T2 (Terbaru): {t2_awal_dt.isoformat()} s.d. {t2_akhir_dt.isoformat()}"
+            )
 
             if not gee_ok:
                 st.error(gee_msg)
@@ -1050,35 +1073,40 @@ def main() -> None:
                     try:
                         st.write("1/3 Menjalankan mesin pemetaan satelit (gee_engine.py)...")
                         hasil_gee = gee_engine.jalankan_analisis_mingguan(
-                            t1_awal.isoformat(),
-                            t1_akhir.isoformat(),
-                            t2_awal.isoformat(),
-                            t2_akhir.isoformat(),
-                            config=config,
+                            tgl_akhir=tgl_akhir_t2.isoformat(),
+                            konfigurasi=config,
+                            jendela_s1_hari=int(jendela_s1_hari),
+                            jendela_s2_hari=int(jendela_s2_hari),
+                            jarak_t1_hari=int(jarak_t1_hari),
+                            sertakan_detail=True,
+                            kredensial=_get_service_account_dict(),
                         )
 
                         metrik = hasil_gee["metrik"]
                         url_thumbnail = hasil_gee["url_thumbnail"]
                         layers_peta = hasil_gee.get("layers_peta")
+                        detail_gee = hasil_gee.get("detail", {})
 
                         st.write("2/3 Memvalidasi citra komposit dengan Gemini 2.5 Flash (ai_validator.py)...")
-                        hasil_ai = validasi_kja_dengan_ai(url_thumbnail, metrik)
+                        hasil_ai = validasi_kja_dengan_ai(url_thumbnail, metrik, detail=detail_gee)
 
-                        st.write("3/3 Menyimpan hasil metrik & validasi ke Google Sheets (24 kolom)...")
+                        st.write("3/3 Menyimpan hasil metrik, detail perubahan & validasi ke Google Sheets (24 kolom)...")
                         simpan_hasil_ke_sheets(
                             metrik=metrik,
                             hasil_ai=hasil_ai,
                             url_thumbnail=url_thumbnail,
-                            t1_awal=t1_awal.isoformat(),
-                            t1_akhir=t1_akhir.isoformat(),
-                            t2_awal=t2_awal.isoformat(),
-                            t2_akhir=t2_akhir.isoformat(),
+                            detail=detail_gee,
+                            t1_awal=t1_awal_dt.isoformat(),
+                            t1_akhir=t1_akhir_dt.isoformat(),
+                            t2_awal=t2_awal_dt.isoformat(),
+                            t2_akhir=t2_akhir_dt.isoformat(),
                         )
 
                         st.session_state["latest_run_result"] = {
                             "metrik": metrik,
                             "url_thumbnail": url_thumbnail,
                             "layers_peta": layers_peta,
+                            "detail": detail_gee,
                             "ai": hasil_ai,
                         }
                         status_box.update(label="Analisis selesai dan tersimpan ke database.", state="complete")
@@ -1154,6 +1182,7 @@ def main() -> None:
         active_ai = active_run["ai"]
         active_thumb = active_run["url_thumbnail"]
         active_layers = active_run.get("layers_peta")
+        active_detail = active_run.get("detail")
     elif latest_sheet_row:
         active_metrik = {
             k: v
@@ -1187,6 +1216,7 @@ def main() -> None:
             or ""
         )
         active_layers = None
+        active_detail = None
     else:
         active_metrik = {
             "minggu_id": "Belum ada data",
@@ -1203,17 +1233,43 @@ def main() -> None:
             "status_validasi_ai": "Perlu dicek",
             "analisis_pola": "Belum ada siklus analisis yang tersimpan di Google Sheets. Aktifkan Mode Admin untuk menjalankan siklus pertama.",
             "rekomendasi_pengawasan": [
-                "Masuk ke Mode Admin dan pilih rentang tanggal T1–T2.",
+                "Masuk ke Mode Admin dan pilih Tanggal Akhir T2 serta jendela analisis.",
                 "Klik tombol Jalankan Analisis & Simpan ke Database.",
                 "Verifikasi hasil estimasi petak terhadap kuota 11.306 petak.",
             ],
         }
         active_thumb = ""
         active_layers = None
+        active_detail = None
 
-    # 1. Kartu Metrik KPI Dinamis + Disclaimer Metodologi
-    render_kpi_dinamis(active_metrik, active_ai.get("status_validasi_ai", "Perlu dicek"), kuota_pemprov)
+    # 1. Kartu Metrik KPI Dinamis + Disclaimer Metodologi + Peringatan Kualitas Citra (bila ada)
+    render_kpi_dinamis(
+        active_metrik,
+        active_ai.get("status_validasi_ai", "Perlu dicek"),
+        kuota_pemprov,
+        detail=active_detail,
+    )
     render_disclaimer_metodologi(config)
+
+    if active_detail:
+        peringatan_list = active_detail.get("peringatan", [])
+        perubahan_info = active_detail.get("perubahan", {})
+        t2_detail = active_detail.get("t2", {})
+
+        if peringatan_list:
+            st.warning("Peringatan Kualitas Citra Satelit: " + " | ".join(map(str, peringatan_list)))
+
+        if perubahan_info:
+            with st.container(border=True):
+                st.markdown('<div class="itc-section-title">Ringkasan Perubahan Spasial &amp; Penapisan S2 (T1 ke T2)</div>', unsafe_allow_html=True)
+                p_cols = st.columns(5)
+                p_cols[0].metric("Luas Tetap", f"{_fmt_float(perubahan_info.get('luas_tetap_ha', 0), 2)} Ha")
+                p_cols[1].metric("Hilang / Bergeser", f"{_fmt_float(perubahan_info.get('luas_hilang_bergeser_ha', 0), 2)} Ha")
+                p_cols[2].metric("Luas Baru", f"{_fmt_float(perubahan_info.get('luas_baru_ha', 0), 2)} Ha")
+                p_cols[3].metric("Cakupan S2 Bebas Awan", f"{_fmt_float(t2_detail.get('cakupan_s2_persen', 0), 1)}%")
+                p_cols[4].metric("Eceng Gondok Dibuang", f"{_fmt_float(t2_detail.get('luas_eceng_dibuang_ha', 0), 2)} Ha")
+                if perubahan_info.get("indikasi_pola"):
+                    st.caption(f"Indikasi pola otomatis: {perubahan_info['indikasi_pola']}")
 
     # 2. Area Peta Interaktif (Esri.WorldImagery) & Hasil Validasi Multimodal AI
     col_map, col_ai = st.columns([1.45, 1], gap="medium")
@@ -1226,19 +1282,17 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-            fmap = bangun_peta_interaktif(active_layers)
+            fmap = bangun_peta_interaktif(active_layers, gee_ok=gee_ok)
             st_folium(fmap, width=None, height=460, returned_objects=[])
 
             st.markdown(
-                """
-                <div class="map-legend">
-                  <span class="legend-item"><span class="legend-swatch" style="background:#EAB308;"></span>KJA Tetap (Kuning)</span>
-                  <span class="legend-item"><span class="legend-swatch" style="background:#DC2626;"></span>KJA Bergeser (Merah)</span>
-                  <span class="legend-item"><span class="legend-swatch" style="background:#16A34A;"></span>KJA Baru (Hijau)</span>
-                  <span class="legend-item"><span class="legend-swatch" style="background:#38BDF8;"></span>KJA Periode Lalu (T1)</span>
-                  <span class="legend-item"><span class="legend-swatch" style="background:#2563EB;"></span>KJA Terbaru (T2)</span>
-                </div>
-                """,
+                '<div class="map-legend">'
+                '<span class="legend-item"><span class="legend-swatch" style="background:#FFD600;"></span>KJA Tetap (Kuning)</span>'
+                '<span class="legend-item"><span class="legend-swatch" style="background:#D50000;"></span>KJA Hilang/Bergeser (Merah)</span>'
+                '<span class="legend-item"><span class="legend-swatch" style="background:#00C853;"></span>KJA Baru (Hijau)</span>'
+                '<span class="legend-item"><span class="legend-swatch" style="background:#00E5FF;"></span>KJA Periode Lalu (T1 - Cyan)</span>'
+                '<span class="legend-item"><span class="legend-swatch" style="background:#FF9100;"></span>KJA Terbaru (T2 - Oranye)</span>'
+                '</div>',
                 unsafe_allow_html=True,
             )
 
