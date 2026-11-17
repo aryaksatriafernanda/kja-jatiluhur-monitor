@@ -18,7 +18,14 @@ from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
 
+import random
+
 MODEL_GEMINI = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL_CADANGAN = [
+    m.strip()
+    for m in os.environ.get("gemini-2.5-flash", "").split(",")
+    if m.strip()
+]
 
 class ValidasiKJASchema(BaseModel):
     """Skema JSON pasti untuk hasil validasi multimodal KJA oleh Gemini."""
@@ -89,7 +96,7 @@ def _unduh_komposit_citra(
     url_thumbnail: str,
     timeout_koneksi: int = 15,
     timeout_baca: int = 240,
-    max_retries: int = 3,
+    max_retries: int = 4,
 ) -> tuple[bytes, str]:
     """Mengunduh komposit dari url_thumbnail (dengan retry) dan menormalkannya ke JPEG."""
     if not url_thumbnail or not url_thumbnail.strip():
@@ -267,10 +274,13 @@ def validasi_kja_dengan_ai(
     )
     
     last_error: Exception | None = None
+    
+    daftar_model = [MODEL_GEMINI, *MODEL_CADANGAN]
     for attempt in range(max_retries):
+        model_dipakai = daftar_model[min(attempt, len(daftar_model) - 1)]
         try:
             response = client.models.generate_content(
-                model=MODEL_GEMINI,
+                model=model_dipakai,
                 contents=contents,
                 config=config,
             )
@@ -309,6 +319,7 @@ def validasi_kja_dengan_ai(
             if kode in (400, 401, 403, 404):
                 break  # error permanen, retry tidak berguna
             if attempt < max_retries - 1:
-                time.sleep(1.5 * (2**attempt))
+                # 503/429/500: tunggu lebih lama (5, 10, 20, 40 detik) + sedikit acak
+                time.sleep(5 * (2**attempt) + random.uniform(0, 2))
 
     raise RuntimeError(f"Gagal melakukan validasi AI setelah {max_retries} percobaan: {last_error}")
