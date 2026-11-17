@@ -18,6 +18,7 @@ from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
 
+MODEL_GEMINI = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 class ValidasiKJASchema(BaseModel):
     """Skema JSON pasti untuk hasil validasi multimodal KJA oleh Gemini."""
@@ -264,12 +265,12 @@ def validasi_kja_dengan_ai(
         response_schema=ValidasiKJASchema,
         temperature=0.2,
     )
-
+    
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=MODEL_GEMINI,
                 contents=contents,
                 config=config,
             )
@@ -304,6 +305,9 @@ def validasi_kja_dengan_ai(
             }
         except Exception as exc:
             last_error = exc
+            kode = getattr(exc, "code", None)
+            if kode in (400, 401, 403, 404):
+                break  # error permanen, retry tidak berguna
             if attempt < max_retries - 1:
                 time.sleep(1.5 * (2**attempt))
 
