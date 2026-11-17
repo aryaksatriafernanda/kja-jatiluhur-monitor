@@ -26,7 +26,7 @@ from google.oauth2.service_account import Credentials
 from streamlit_folium import st_folium
 
 import gee_engine
-from ai_validator import validasi_kja_dengan_ai
+from ai_validator import validasi_kja_aman
 
 # ---------------------------------------------------------------------------
 # Konstanta Sistem Terkalibrasi (Sensus Lapangan 2026: 49.807 petak / 249,04 Ha)
@@ -1088,7 +1088,7 @@ def main() -> None:
                         detail_gee = hasil_gee.get("detail", {})
 
                         st.write("2/3 Memvalidasi citra komposit dengan Gemini 2.5 Flash (ai_validator.py)...")
-                        hasil_ai = validasi_kja_dengan_ai(url_thumbnail, metrik, detail=detail_gee)
+                        hasil_ai = validasi_kja_aman(url_thumbnail, metrik, detail=detail_gee)
 
                         st.write("3/3 Menyimpan hasil metrik, detail perubahan & validasi ke Google Sheets (24 kolom)...")
                         simpan_hasil_ke_sheets(
