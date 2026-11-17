@@ -323,3 +323,18 @@ def validasi_kja_dengan_ai(
                 time.sleep(5 * (2**attempt) + random.uniform(0, 2))
 
     raise RuntimeError(f"Gagal melakukan validasi AI setelah {max_retries} percobaan: {last_error}")
+
+def validasi_kja_aman(*args, **kwargs) -> dict[str, Any]:
+    """Seperti validasi_kja_dengan_ai, tetapi mengembalikan hasil cadangan jika gagal."""
+    try:
+        return validasi_kja_dengan_ai(*args, **kwargs)
+    except Exception as exc:
+        return {
+            "status_validasi_ai": "Perlu dicek",
+            "analisis_pola": f"Validasi AI belum tersedia ({type(exc).__name__}). Perlu verifikasi manual.",
+            "rekomendasi_pengawasan": [
+                "Jalankan ulang validasi AI beberapa menit kemudian.",
+                "Periksa citra komposit secara visual sebelum data dipakai.",
+                "Lakukan patroli verifikasi pada klaster KJA berkepadatan tinggi.",
+            ],
+        }
