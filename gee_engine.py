@@ -390,10 +390,10 @@ def _layers(s2, det, imgs):
 # ============================ 9. FUNGSI UTAMA (KONTRAK BAKU) ============================
 def jalankan_analisis_mingguan(tgl_akhir=None, *, konfigurasi=None,
                                jendela_s1_hari=14, jendela_s2_hari=45, jarak_t1_hari=14,
-                               ambang_vv_db=-14.5, ambang_vh_db=-21.0, aturan_s1="dan",
-                               ambang_ndvi=0.35, ambang_ndwi_min=None, cs_min=0.60,
+                               ambang_vv_db=-12.0, ambang_vh_db=-22.0, aturan_s1="dan",
+                               ambang_ndvi=0.30, ambang_ndwi_min=-0.30, cs_min=0.60,
                                min_piksel_klaster=5, radius_median_m=15, toleransi_geser_m=20,
-                               buffer_pantai_m=15, orbit="DESCENDING", metode_klaster="vektor",
+                               buffer_pantai_m=15, orbit=None, metode_klaster="vektor",
                                maks_detail_klaster=300, dimensi_thumb=512, wilayah_thumb=None,
                                sertakan_detail=False, kredensial=None):
 
