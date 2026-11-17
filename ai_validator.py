@@ -71,7 +71,7 @@ def _resolve_gemini_api_key(explicit_api_key: str | None = None) -> str:
     )
 
 
-def _unduh_komposit_citra(url_thumbnail: str, timeout_detik: int = 30) -> tuple[bytes, str]:
+def _unduh_komposit_citra(url_thumbnail: str, timeout_detik: int = 120) -> tuple[bytes, str]:
     """Mengunduh gambar komposit dari url_thumbnail dan menormalkannya ke JPEG/PNG."""
     if not url_thumbnail or not url_thumbnail.strip():
         raise ValueError("url_thumbnail tidak boleh kosong.")
