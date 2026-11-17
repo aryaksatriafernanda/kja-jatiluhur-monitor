@@ -101,7 +101,7 @@ def _estimasi(luas_m2, cfg):
 
 
 # ========================= 3. BATAS & TOPENG BADAN AIR =========================
-def dapatkan_batas_waduk(ambang_occurrence=75, radius_penutupan_m=150,
+def dapatkan_batas_waduk(ambang_occurrence=80, radius_penutupan_m=150,
                          radius_cari_m=6000, luas_min_km2=1.0, paksa_ulang=False):
     """Batas air Jatiluhur dari JRC GSW (occurrence > ambang). Di-cache per proses.
     Return: (geometri_batas, kotak_pembatas, info)."""
@@ -387,14 +387,16 @@ def _layers(s2, det, imgs):
 
 
 # ============================ 9. FUNGSI UTAMA (KONTRAK BAKU) ============================
+# Di baris 261-263 file gee_engine.py, ubah jendela_s1_hari=7 dan jarak_t1_hari=7:
 def jalankan_analisis_mingguan(tgl_akhir=None, *, konfigurasi=None,
-                               jendela_s1_hari=14, jendela_s2_hari=45, jarak_t1_hari=14,
+                               jendela_s1_hari=7, jendela_s2_hari=30, jarak_t1_hari=7,
                                ambang_vv_db=-12.0, ambang_vh_db=-22.0, aturan_s1="dan",
                                ambang_ndvi=0.30, ambang_ndwi_min=-0.30, cs_min=0.60,
                                min_piksel_klaster=5, radius_median_m=15, toleransi_geser_m=20,
                                buffer_pantai_m=15, orbit=None, metode_klaster="vektor",
                                maks_detail_klaster=300, dimensi_thumb=512, wilayah_thumb=None,
                                sertakan_detail=False, kredensial=None):
+
 
     """
     T2 = jendela mundur dari `tgl_akhir` (default: hari ini); T1 = jendela yang berakhir
