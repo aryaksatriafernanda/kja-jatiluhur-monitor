@@ -71,34 +71,69 @@ def _resolve_gemini_api_key(explicit_api_key: str | None = None) -> str:
     )
 
 
-def _unduh_komposit_citra(url_thumbnail: str, timeout_detik: int = 120) -> tuple[bytes, str]:
-    """Mengunduh gambar komposit dari url_thumbnail dan menormalkannya ke JPEG/PNG."""
+class CitraTidakTersedia(RuntimeError):
+    """Gagal mengunduh komposit citra dari Earth Engine."""
+
+
+def _ringkas_error_gee(response: requests.Response) -> str:
+    """Mengambil pesan error asli dari body respons GEE."""
+    try:
+        pesan = response.json().get("error", {}).get("message") or response.text
+    except Exception:
+        pesan = response.text
+    return (pesan or "").strip()[:500]
+
+
+def _unduh_komposit_citra(
+    url_thumbnail: str,
+    timeout_koneksi: int = 15,
+    timeout_baca: int = 240,
+    max_retries: int = 3,
+) -> tuple[bytes, str]:
+    """Mengunduh komposit dari url_thumbnail (dengan retry) dan menormalkannya ke JPEG."""
     if not url_thumbnail or not url_thumbnail.strip():
         raise ValueError("url_thumbnail tidak boleh kosong.")
 
-    response = requests.get(
-        url_thumbnail.strip(),
-        timeout=timeout_detik,
-        headers={"User-Agent": "Jatiluhur-KJA-Monitor/1.0"},
-    )
-    response.raise_for_status()
+    url = url_thumbnail.strip()
+    raw_bytes: bytes | None = None
+    last_error = "tidak diketahui"
 
-    raw_bytes = response.content
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(
+                url,
+                timeout=(timeout_koneksi, timeout_baca),  # (connect, read)
+                headers={"User-Agent": "Jatiluhur-KJA-Monitor/1.0"},
+            )
+            if response.ok:
+                raw_bytes = response.content
+                break
+
+            detail = _ringkas_error_gee(response)
+            last_error = f"HTTP {response.status_code}: {detail}"
+            gagal_komputasi = response.status_code == 400 and any(
+                k in detail.lower() for k in ("timed out", "timeout", "computation", "memory")
+            )
+            bisa_diulang = response.status_code in (429, 500, 502, 503, 504) or gagal_komputasi
+            if not bisa_diulang:
+                break  # 400 permanen (citra kosong, dimensi terlalu besar, dll.)
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+        if attempt < max_retries - 1:
+            time.sleep(3 * (2**attempt))  # GEE biasanya sudah men-cache hasil pada percobaan berikutnya
+
     if not raw_bytes:
-        raise ValueError("Konten gambar dari url_thumbnail kosong.")
+        raise CitraTidakTersedia(f"Gagal mengunduh citra komposit GEE. {last_error}")
 
-    # Verifikasi dan konversi ke JPEG berkualitas tinggi agar kompatibel dengan Gemini multimodal
-    with Image.open(BytesIO(raw_bytes)) as img:
-        if img.mode in ("RGBA", "LA", "P"):
-            rgb_img = img.convert("RGB")
-        elif img.mode != "RGB":
-            rgb_img = img.convert("RGB")
-        else:
-            rgb_img = img
-
-        buffer = BytesIO()
-        rgb_img.save(buffer, format="JPEG", quality=92)
-        return buffer.getvalue(), "image/jpeg"
+    try:
+        with Image.open(BytesIO(raw_bytes)) as img:
+            rgb_img = img if img.mode == "RGB" else img.convert("RGB")
+            buffer = BytesIO()
+            rgb_img.save(buffer, format="JPEG", quality=92)
+            return buffer.getvalue(), "image/jpeg"
+    except Exception as exc:
+        raise CitraTidakTersedia(f"Respons GEE bukan gambar valid: {exc}") from exc
 
 
 def _bangun_prompt_validasi(
@@ -200,24 +235,29 @@ def validasi_kja_dengan_ai(
     api_key: str | None = None,
     max_retries: int = 3,
     detail: dict[str, Any] | None = None,
+    izinkan_tanpa_citra: bool = True,
 ) -> dict[str, Any]:
-    """
-    Mengunduh gambar komposit satelit dari url_thumbnail dan mengirimkannya bersama
-    angka metrik (serta detail opsional dari gee_engine.py) ke Gemini API (gemini-2.5-flash)
-    menggunakan Structured Outputs.
-
-    Returns:
-        dict dengan tepat 3 key:
-        - status_validasi_ai: "Valid" | "Perlu dicek"
-        - analisis_pola: str (2-3 kalimat)
-        - rekomendasi_pengawasan: list[str] (3 poin tindakan)
-    """
     resolved_key = _resolve_gemini_api_key(api_key)
-    image_bytes, mime_type = _unduh_komposit_citra(url_thumbnail)
     prompt = _bangun_prompt_validasi(metrik, detail=detail)
 
+    image_part = None
+    catatan_citra = ""
+    try:
+        image_bytes, mime_type = _unduh_komposit_citra(url_thumbnail)
+        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    except CitraTidakTersedia as exc:
+        if not izinkan_tanpa_citra:
+            raise
+        catatan_citra = str(exc)
+        prompt += (
+            "\n\nCATATAN PENTING: citra komposit TIDAK dapat diunduh sehingga tidak ada "
+            "gambar yang dilampirkan. Analisis hanya berdasarkan metrik di atas, "
+            'wajib pilih status_validasi_ai = "Perlu dicek", dan salah satu rekomendasi '
+            "harus berupa verifikasi visual ulang secara manual."
+        )
+
     client = genai.Client(api_key=resolved_key)
-    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    contents = [image_part, prompt] if image_part is not None else [prompt]
 
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
@@ -230,7 +270,7 @@ def validasi_kja_dengan_ai(
         try:
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=[image_part, prompt],
+                contents=contents,
                 config=config,
             )
 
@@ -247,6 +287,8 @@ def validasi_kja_dengan_ai(
             # Pastikan kepatuhan format akhir
             status = hasil["status_validasi_ai"]
             if status not in ("Valid", "Perlu dicek"):
+                status = "Perlu dicek"
+            if image_part is None:
                 status = "Perlu dicek"
 
             rekomendasi = [str(item).strip() for item in hasil["rekomendasi_pengawasan"] if str(item).strip()]
