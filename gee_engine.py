@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-gee_engine.py - Mesin analisis KJA Waduk Jatiluhur (Fase 2, Terkalibrasi)
+gee_engine.py - Mesin analisis KJA Waduk Jatiluhur (Fase 2, Komposit Terbaik & Anti-Surut)
 
-Aturan Terkunci (Anti-Daratan & Kalibrasi Sensus 2026: 249,04 Ha / 49.807 petak):
-1. Batas Badan Air Aman (JRC GSW occurrence > 80 + penutupan 150 m dibatasi selubung air historis).
-2. Penyusutan Bibir Pantai 18 m (rentang 15-20 m) pada grid UTM 10 m agar tebing/pohon/bangunan tepi
-   tidak pernah terbaca sebagai KJA.
-3. Sentinel-1 Radar: jendela 14 hari, orbit tunggal DESCENDING (dengan fallback aman bila kosong),
-   filter speckle focalMedian 15 m, ambang ketat VV > -12,0 dB AND VH > -22,0 dB, min 5 piksel.
-4. Sentinel-2 Optik: jendela 45 hari, cs_cdf >= 0,60, penapisan eceng gondok (NDVI >= 0,30 / NDWI < -0,30).
-5. Pembagi Luas Efektif Baku: 48 / 50 / 52 m²/petak terhadap kuota 11.306 petak.
+Aturan Terkunci (Akurat pada Tanggal Mana Pun & Bebas Daratan Surut):
+1. Ketersediaan Data Terbaik (`daftar_tanggal_terbaik`): memindai katalog GEE untuk menemukan
+   tanggal checkpoint dengan minimal 3 citra Sentinel-1 dan tutupan awan Sentinel-2 rendah.
+2. Komposit Multi-Lintasan Sentinel-1 (`target_citra_s1=4`, `min_citra_s1=3`): mengambil 3-4
+   akuisisi IW terbaru (ASCENDING + DESCENDING) hingga tanggal target agar derau gelombang/speckle
+   dan sudut buta orientasi rakit hilang.
+3. Penjagaan Air Dinamis Sentinel-2 (MNDWI / NDWI / SWIR B11) + Susut Pantai JRC 20 m:
+   memblokir hamparan lumpur/tebing pantai yang tersingkap saat muka air waduk surut sekaligus
+   mempertahankan seluruh gugusan KJA aktif di tengah perairan.
+4. Kalibrasi Sensus 2026 (249,04 Ha / 49.807 petak): pembagi baku 48 / 50 / 52 m²/petak
+   terhadap batas kuota Pemprov Jabar 11.306 petak.
 """
 from __future__ import annotations
 
@@ -136,15 +139,15 @@ def _estimasi(luas_m2: float, cfg: dict[str, Any]) -> dict[str, Any]:
 
 # ========================= 3. BATAS & TOPENG BADAN AIR =========================
 def dapatkan_batas_waduk(
-    ambang_occurrence: int = 80,
+    ambang_occurrence: int = 82,
     radius_penutupan_m: int = 150,
     radius_cari_m: int = 6000,
     luas_min_km2: float = 1.0,
     paksa_ulang: bool = False,
 ) -> tuple[Any, Any, dict[str, Any]]:
     """
-    Batas badan air Waduk Jatiluhur dari JRC GSW (occurrence > 80).
-    Penutupan morfologi 150 m dikunci di dalam selubung perairan historis (max_extent / occ > 20)
+    Batas badan air Waduk Jatiluhur dari JRC GSW (occurrence > 82).
+    Penutupan morfologi 150 m dikunci di dalam selubung perairan historis (max_extent / occ > 25)
     agar menambal zona KJA padat di tengah perairan tanpa meluber ke daratan tepi waduk.
     """
     kunci = (ambang_occurrence, radius_penutupan_m, radius_cari_m, luas_min_km2)
@@ -163,8 +166,7 @@ def dapatkan_batas_waduk(
         air.focalMax(radius_penutupan_m, "circle", "meters")
         .focalMin(radius_penutupan_m, "circle", "meters")
     )
-    # Penjaga anti-daratan: penutupan tidak boleh melewati batas perairan maksimum historis JRC
-    selubung_air = max_ext.eq(1).Or(occ.gt(20)).focalMax(20, "circle", "meters")
+    selubung_air = max_ext.eq(1).Or(occ.gt(25)).focalMax(15, "circle", "meters")
     tutup = tutup_raw.And(selubung_air)
 
     vek = tutup.selfMask().reduceToVectors(
@@ -213,10 +215,10 @@ def ambil_bbox_waduk() -> tuple[float, float, float, float]:
     return min(lat), min(lon), max(lat), max(lon)
 
 
-def _topeng_air(batas: Any, buffer_pantai_m: int) -> Any:
+def _topeng_air_jrc(batas: Any, buffer_pantai_m: int) -> Any:
     """
-    Rasterisasi batas badan air pada grid UTM 10 m, lalu susutkan 15-20 m dari bibir pantai
-    agar tebing, pepohonan, dermaga, dan bangunan darat tidak pernah masuk masker analisis.
+    Rasterisasi batas badan air pada grid UTM 10 m, lalu susutkan 20 m dari bibir pantai historis
+    agar tebing curam, pepohonan, dan dermaga darat terbuang sejak awal.
     """
     dasar = (
         ee.Image(0)
@@ -228,7 +230,7 @@ def _topeng_air(batas: Any, buffer_pantai_m: int) -> Any:
     return dasar.selfMask().rename("air")
 
 
-# ============================ 4. TANGGAL, KOLEKSI, KOMPOSIT ============================
+# ============================ 4. PEMINDAI KETERSEDIAAN & KOLEKSI ============================
 def _ke_date(x: Any) -> date:
     if isinstance(x, datetime):
         return x.date()
@@ -237,24 +239,7 @@ def _ke_date(x: Any) -> date:
     return datetime.strptime(str(x)[:10], "%Y-%m-%d").date()
 
 
-def _periode(akhir: date, hari_s1: int, hari_s2: int) -> dict[str, Any]:
-    return {
-        "akhir": akhir.isoformat(),
-        "s1": ((akhir - timedelta(days=hari_s1 - 1)).isoformat(), akhir.isoformat()),
-        "s2": ((akhir - timedelta(days=hari_s2 - 1)).isoformat(), akhir.isoformat()),
-    }
-
-
-def _rentang(awal: str, akhir: str) -> tuple[Any, Any]:
-    return ee.Date(awal), ee.Date(akhir).advance(1, "day")  # akhir inklusif
-
-
-def _tgl_terbaru(koleksi: Any) -> Any:
-    mx = koleksi.aggregate_max("system:time_start")
-    return ee.Algorithms.If(koleksi.size().gt(0), ee.Date(mx).format("YYYY-MM-dd"), "-")
-
-
-def _koleksi_s1(kotak: Any, d0: Any, d1: Any, orbit: str | None) -> Any:
+def _koleksi_s1(kotak: Any, d0: Any, d1: Any, orbit: str | None = None) -> Any:
     k = (
         ee.ImageCollection("COPERNICUS/S1_GRD")
         .filterBounds(kotak)
@@ -282,46 +267,273 @@ def _koleksi_s2(kotak: Any, d0: Any, d1: Any) -> Any:
     return s2.linkCollection(cs, ["cs_cdf"])
 
 
-def _komposit_s1(koleksi: Any, radius_median_m: int) -> Any:
-    return (
-        koleksi.median()
+def daftar_tanggal_terbaik(
+    jumlah_hari_belakang: int = 150,
+    min_citra_s1: int = 3,
+    jendela_s1_maks_hari: int = 28,
+    jendela_s2_hari: int = 45,
+    jarak_antar_opsi_hari: int = 7,
+    tgl_referensi: Any = None,
+    kredensial: Any = None,
+) -> list[dict[str, Any]]:
+    """
+    Memindai ketersediaan citra Sentinel-1 dan Sentinel-2 aktual di Earth Engine untuk
+    menyusun daftar tanggal checkpoint berkualitas terbaik (minimal 3 citra S1 dalam jendela
+    komposit dan ketersediaan S2 rendah awan), diurutkan dari yang terbaru.
+    """
+    inisialisasi_ee(kredensial)
+    _, kotak, _ = dapatkan_batas_waduk()
+
+    akhir_dt = _ke_date(tgl_referensi) if tgl_referensi else date.today()
+    awal_dt = akhir_dt - timedelta(days=int(jumlah_hari_belakang) + int(jendela_s2_hari))
+    d0 = ee.Date(awal_dt.isoformat())
+    d1 = ee.Date(akhir_dt.isoformat()).advance(1, "day")
+
+    s1_all = _koleksi_s1(kotak, d0, d1, orbit=None)
+    s2_all = (
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+        .filterBounds(kotak)
+        .filterDate(d0, d1)
+    )
+
+    meta = ee.Dictionary({
+        "s1_ts": s1_all.aggregate_array("system:time_start"),
+        "s2_ts": s2_all.aggregate_array("system:time_start"),
+        "s2_cloud": s2_all.aggregate_array("CLOUDY_PIXEL_PERCENTAGE"),
+    }).getInfo()
+
+    s1_dates = sorted(
+        {
+            datetime.utcfromtimestamp(ts / 1000.0).date()
+            for ts in (meta.get("s1_ts") or [])
+            if ts is not None
+        }
+    )
+    s2_records: list[tuple[date, float]] = []
+    for ts, cld in zip(meta.get("s2_ts") or [], meta.get("s2_cloud") or []):
+        if ts is not None:
+            d = datetime.utcfromtimestamp(ts / 1000.0).date()
+            c = float(cld) if cld is not None else 50.0
+            s2_records.append((d, c))
+    s2_records.sort(key=lambda x: x[0])
+
+    batas_awal_kandidat = akhir_dt - timedelta(days=int(jumlah_hari_belakang))
+    # Kandidat tanggal berasal dari tanggal akuisisi S1 aktual terbaru atau S2 bersih awan
+    kandidat_unik = sorted(
+        {
+            d
+            for d in s1_dates + [rec[0] for rec in s2_records if rec[1] <= 45.0]
+            if batas_awal_kandidat <= d <= akhir_dt
+        },
+        reverse=True,
+    )
+
+    terpilih: list[dict[str, Any]] = []
+    min_req_list = [max(2, int(min_citra_s1)), 2]
+
+    for min_req in min_req_list:
+        kandidat_lolos: list[dict[str, Any]] = []
+        for tgl in kandidat_unik:
+            s1_win = [
+                d
+                for d in s1_dates
+                if (tgl - timedelta(days=jendela_s1_maks_hari - 1)) <= d <= tgl
+            ]
+            if len(s1_win) < min_req:
+                continue
+
+            s2_win = [
+                (d, c)
+                for (d, c) in s2_records
+                if (tgl - timedelta(days=jendela_s2_hari - 1)) <= d <= tgl
+            ]
+            if not s2_win:
+                continue
+
+            s2_bersih = [(d, c) for (d, c) in s2_win if c <= 40.0]
+            awan_terbaik = min(c for (_, c) in s2_win)
+            tgl_s1_last = max(s1_win).isoformat()
+            tgl_s2_last = (max(d for (d, _) in s2_bersih) if s2_bersih else max(d for (d, _) in s2_win)).isoformat()
+
+            # Hitung skor mutu (0-100): kepadatan S1 multi-lintasan + kebersihan awan S2 + kesegaran S2
+            jarak_s2_hari = (tgl - date.fromisoformat(tgl_s2_last)).days
+            skor_s1 = min(len(s1_win), 5) / 5.0 * 45.0
+            skor_awan = max(0.0, 100.0 - awan_terbaik) / 100.0 * 35.0
+            skor_segar = max(0.0, 1.0 - (jarak_s2_hari / max(jendela_s2_hari, 1))) * 20.0
+            skor_total = round(skor_s1 + skor_awan + skor_segar, 1)
+
+            if len(s1_win) >= 3 and awan_terbaik <= 25.0 and jarak_s2_hari <= 21:
+                kategori = "Terbaik"
+            elif len(s1_win) >= 3 and len(s2_bersih) >= 1:
+                kategori = "Baik"
+            else:
+                kategori = "Cukup"
+
+            kandidat_lolos.append({
+                "tanggal": tgl.isoformat(),
+                "tgl_s1_terakhir": tgl_s1_last,
+                "tgl_s2_terakhir": tgl_s2_last,
+                "jumlah_s1_komposit": min(len(s1_win), 4),
+                "jumlah_s1_tersedia": len(s1_win),
+                "jumlah_s2_jendela": len(s2_win),
+                "awan_s2_terbaik_persen": round(awan_terbaik, 1),
+                "skor_mutu": skor_total,
+                "kategori_mutu": kategori,
+                "label": (
+                    f"{tgl.isoformat()} — {kategori} "
+                    f"({min(len(s1_win), 4)} citra S1 · S2 {tgl_s2_last}, awan {round(awan_terbaik)}%)"
+                ),
+            })
+
+        # Jaga jarak minimal antar opsi agar daftar bersih & informatif (prioritaskan skor tertinggi di sekitar tanggal terdekat)
+        terpilih = []
+        last_picked: date | None = None
+        for item in kandidat_lolos:
+            tgl_cur = date.fromisoformat(item["tanggal"])
+            if last_picked is None or (last_picked - tgl_cur).days >= int(jarak_antar_opsi_hari):
+                terpilih.append(item)
+                last_picked = tgl_cur
+
+        if terpilih:
+            break
+
+    return terpilih
+
+
+def _komposit_s1_adaptif(
+    kotak: Any,
+    tgl_akhir_str: str,
+    jendela_maks_hari: int,
+    target_citra: int,
+    radius_median_m: int,
+    orbit: str | None,
+) -> tuple[Any, Any, int, str, str, str]:
+    """
+    Mengambil `target_citra` (baku 4) akuisisi Sentinel-1 IW terbaru hingga `tgl_akhir_str`
+    dalam jendela maksimal `jendela_maks_hari` hari. Menjamin komposit median multi-lintasan
+    tidak pernah rapuh oleh citra radar tunggal.
+    """
+    akhir_d = _ke_date(tgl_akhir_str)
+    awal_d = akhir_d - timedelta(days=int(jendela_maks_hari) - 1)
+    d0 = ee.Date(awal_d.isoformat())
+    d1 = ee.Date(akhir_d.isoformat()).advance(1, "day")
+
+    kol = _koleksi_s1(kotak, d0, d1, orbit=orbit).sort("system:time_start", False).limit(int(target_citra))
+    info = ee.Dictionary({
+        "n": kol.size(),
+        "tgl_min": ee.Algorithms.If(
+            kol.size().gt(0),
+            ee.Date(kol.aggregate_min("system:time_start")).format("YYYY-MM-dd"),
+            awal_d.isoformat(),
+        ),
+        "tgl_max": ee.Algorithms.If(
+            kol.size().gt(0),
+            ee.Date(kol.aggregate_max("system:time_start")).format("YYYY-MM-dd"),
+            "-",
+        ),
+    }).getInfo()
+
+    n_citra = int(info["n"] or 0)
+    if n_citra == 0:
+        raise ValueError(
+            f"Tidak ada citra Sentinel-1 hingga {tgl_akhir_str} (dalam {jendela_maks_hari} hari terakhir)."
+        )
+
+    komposit = (
+        kol.median()
         .reproject(crs=CRS, scale=SKALA)
         .focalMedian(radius_median_m, "circle", "meters")
     )
+    return komposit, kol, n_citra, str(info["tgl_min"]), str(info["tgl_max"]), str(tgl_akhir_str)
 
 
-def _komposit_s2(koleksi: Any, cs_min: float, n_citra: int) -> Any:
+def _komposit_s2_adaptif(
+    kotak: Any,
+    tgl_akhir_str: str,
+    jendela_s2_hari: int,
+    cs_min: float,
+) -> tuple[Any, Any, int, str]:
+    """Komposit Sentinel-2 bebas awan termasuk kanal SWIR B11 untuk penjagaan air dinamis."""
+    akhir_d = _ke_date(tgl_akhir_str)
+    awal_d = akhir_d - timedelta(days=int(jendela_s2_hari) - 1)
+    d0 = ee.Date(awal_d.isoformat())
+    d1 = ee.Date(akhir_d.isoformat()).advance(1, "day")
+
+    kol = _koleksi_s2(kotak, d0, d1)
+    info = ee.Dictionary({
+        "n": kol.size(),
+        "tgl_max": ee.Algorithms.If(
+            kol.size().gt(0),
+            ee.Date(kol.aggregate_max("system:time_start")).format("YYYY-MM-dd"),
+            "-",
+        ),
+    }).getInfo()
+
+    n_citra = int(info["n"] or 0)
     if n_citra == 0:
-        return (
-            ee.Image.constant([0, 0, 0, 0])
-            .rename(["B2", "B3", "B4", "B8"])
+        kosong = (
+            ee.Image.constant([0, 0, 0, 0, 0])
+            .rename(["B2", "B3", "B4", "B8", "B11"])
             .updateMask(ee.Image.constant(0))
         )
-    k = (
-        koleksi.map(lambda im: im.updateMask(im.select("cs_cdf").gte(cs_min)))
-        .select(["B2", "B3", "B4", "B8"])
+        return kosong, kol, 0, "-"
+
+    tertap = (
+        kol.map(lambda im: im.updateMask(im.select("cs_cdf").gte(cs_min)))
+        .select(["B2", "B3", "B4", "B8", "B11"])
     )
-    return k.median().reproject(crs=CRS, scale=SKALA)
+    komposit = tertap.median().reproject(crs=CRS, scale=SKALA)
+    return komposit, tertap, n_citra, str(info["tgl_max"])
 
 
-# ============================ 5. DETEKSI KJA ============================
-def _deteksi(s1: Any, s2: Any, air_img: Any, p: dict[str, Any]) -> dict[str, Any]:
+# ============================ 5. DETEKSI KJA + ANTI-SURUT DINAMIS ============================
+def _deteksi(s1: Any, s2: Any, air_jrc: Any, p: dict[str, Any]) -> dict[str, Any]:
+    """
+    Deteksi KJA terkalibrasi dengan penjagaan badan air dinamis Sentinel-2:
+    - Daratan/lumpur surut tepi waduk (SWIR B11 tinggi atau jauh dari air optik MNDWI) diblokir.
+    - Vegetasi / eceng gondok (NDVI tinggi / NDWI sangat negatif) dibuang.
+    - Rakit KJA aktif di tengah badan air tetap tertangkap utuh.
+    """
     vv = s1.select("VV").gt(p["ambang_vv_db"])
     vh = s1.select("VH").gt(p["ambang_vh_db"])
     kuat = (vv.Or(vh) if p["aturan_s1"] == "atau" else vv.And(vh)).rename("kja")
-    mentah = kuat.updateMask(air_img).selfMask()
+    mentah_radar = kuat.updateMask(air_jrc).selfMask()
 
     ndvi = s2.normalizedDifference(["B8", "B4"])
-    veg = ndvi.gt(p["ambang_ndvi"])
-    if p["ambang_ndwi_min"] is not None:
-        veg = veg.Or(s2.normalizedDifference(["B3", "B8"]).lt(p["ambang_ndwi_min"]))
-    eceng = veg.unmask(0).rename("eceng")
+    ndwi = s2.normalizedDifference(["B3", "B8"])
+    mndwi = s2.normalizedDifference(["B3", "B11"])
+    b11 = s2.select("B11")
     s2_valid = s2.select("B8").mask().unmask(0).rename("s2_valid")
+
+    # Air optik murni S2: air terbuka memiliki MNDWI > 0 dan SWIR B11 rendah (< 950)
+    air_optik_murni = mndwi.gt(0.0).And(ndwi.gt(-0.05)).And(b11.lt(950)).unmask(0)
+    # Rakit KJA selalu berada di sekitar air terbuka (<= 80 m dari permukaan air optik aktif)
+    dekat_air_aktif = air_optik_murni.focalMax(80, "circle", "meters")
+
+    # Daratan tersingkap/tebing surut memiliki SWIR B11 tinggi (>= 1150) atau MNDWI & NDWI kering
+    lumpur_kering = b11.gte(1150).Or(mndwi.lt(-0.20).And(ndwi.lt(-0.18)))
+    blokir_surut = lumpur_kering.Or(dekat_air_aktif.Not()).And(s2_valid).unmask(0)
+
+    # Topeng air aktif final: JRC tererosi DAN tidak diblokir sebagai tepian surut oleh S2
+    air_aktif = air_jrc.updateMask(blokir_surut.Not()).selfMask().rename("air")
+
+    mentah = mentah_radar.updateMask(air_aktif).selfMask()
+
+    veg = ndvi.gte(p["ambang_ndvi"])
+    if p["ambang_ndwi_min"] is not None:
+        veg = veg.Or(ndwi.lt(p["ambang_ndwi_min"]))
+    eceng = veg.unmask(0).rename("eceng")
 
     bersih0 = mentah.updateMask(eceng.Not()).selfMask()
     ukuran = bersih0.connectedPixelCount(128, True)
     bersih = bersih0.updateMask(ukuran.gte(p["min_piksel_klaster"])).selfMask()
-    return {"mentah": mentah, "bersih": bersih, "eceng": eceng, "s2_valid": s2_valid}
+    return {
+        "air_aktif": air_aktif,
+        "mentah": mentah,
+        "bersih": bersih,
+        "eceng": eceng,
+        "s2_valid": s2_valid,
+    }
 
 
 # ============================ 6. METRIK PER PERIODE ============================
@@ -374,7 +586,6 @@ def _ringkas_klaster(bersih: Any, batas: Any, metode: str, maks_detail: int) -> 
 def _metrik(
     det: dict[str, Any],
     batas: Any,
-    air_img: Any,
     n_s1: int,
     n_s2: int,
     cfg: dict[str, Any],
@@ -382,6 +593,7 @@ def _metrik(
     maks_detail: int,
 ) -> dict[str, Any]:
     luas = ee.Image.pixelArea()
+    air_img = det["air_aktif"]
     susun = ee.Image.cat([
         luas.updateMask(air_img).rename("air"),
         luas.updateMask(det["mentah"]).rename("mentah"),
@@ -453,7 +665,8 @@ def _indikasi_pola(hilang_ha: float, baru_ha: float, luas1_ha: float) -> str:
 def _perubahan(
     b1: Any,
     b2: Any,
-    air_img: Any,
+    air1: Any,
+    air2: Any,
     batas: Any,
     tol_m: int,
     luas1_ha: float,
@@ -461,16 +674,16 @@ def _perubahan(
     cfg: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tol = max(tol_m, SKALA)
+    air_bersama = air1.unmask(0).And(air2.unmask(0)).selfMask()
     k1, k2 = b1.unmask(0), b2.unmask(0)
     k1d = k1.focalMax(tol, "circle", "meters")
     k2d = k2.focalMax(tol, "circle", "meters")
 
-    tetap = k2.And(k1d).updateMask(air_img).selfMask()
-    bergeser = k1.And(k2d.Not()).updateMask(air_img).selfMask()
-    baru = k2.And(k1d.Not()).updateMask(air_img).selfMask()
+    tetap = k2.And(k1d).updateMask(air_bersama).selfMask()
+    bergeser = k1.And(k2d.Not()).updateMask(air_bersama).selfMask()
+    baru = k2.And(k1d.Not()).updateMask(air_bersama).selfMask()
     imgs = {"tetap": tetap, "bergeser": bergeser, "baru": baru}
 
-    # Pisahkan zona hilang permanen vs relokasi lokal (bergeser dalam radius 150 m dari klaster baru)
     dekat_baru = baru.unmask(0).focalMax(150, "circle", "meters")
     geser_lokal = bergeser.updateMask(dekat_baru).selfMask()
     hilang_murni = bergeser.updateMask(dekat_baru.Not()).selfMask()
@@ -547,10 +760,9 @@ def _buat_thumb_url(citra: Any, wilayah: Any, dimensi: int) -> str:
 
 
 def _thumbnail(
-    s1k: list[Any],
-    s2k: list[Any],
+    s1_kols: list[Any],
+    s2_tertap_list: list[Any],
     n_s2_list: list[int],
-    cs_min: float,
     p: dict[str, Any],
     batas: Any,
     wilayah: Any,
@@ -558,9 +770,8 @@ def _thumbnail(
     lengkap: bool,
 ) -> dict[str, str]:
     """
-    Merender thumbnail ringan (tanpa reproject 10 m paksa & format JPG 3-band <= 768 px)
-    agar tidak melampaui batas memori 80 MiB getThumbURL GEE, sambil tetap menampilkan
-    latar radar Sentinel-1, optik RGB Sentinel-2, batas waduk, dan deteksi KJA oranye.
+    Merender thumbnail ringan (tanpa .reproject 10 m paksa & format JPG 3-band <= 768 px)
+    dengan topeng air S2 dinamis yang sama agar tampilan pratinjau bebas daratan surut.
     """
     garis = (
         ee.Image()
@@ -571,21 +782,16 @@ def _thumbnail(
     air_thumb = ee.Image(0).paint(ee.FeatureCollection([ee.Feature(batas)]), 1).selfMask()
 
     def s1_vis(i: int) -> Any:
-        return s1k[i].median().select(["VV", "VH"])
+        return s1_kols[i].median().select(["VV", "VH"])
 
     def s2_vis(i: int) -> Any:
         if n_s2_list[i] == 0:
             return (
-                ee.Image.constant([0, 0, 0, 0])
-                .rename(["B2", "B3", "B4", "B8"])
+                ee.Image.constant([0, 0, 0, 0, 0])
+                .rename(["B2", "B3", "B4", "B8", "B11"])
                 .updateMask(ee.Image.constant(0))
             )
-        return (
-            s2k[i]
-            .map(lambda im: im.updateMask(im.select("cs_cdf").gte(cs_min)))
-            .select(["B2", "B3", "B4", "B8"])
-            .median()
-        )
+        return s2_tertap_list[i].median()
 
     def kja_vis(i: int) -> Any:
         im1 = s1_vis(i)
@@ -593,18 +799,38 @@ def _thumbnail(
         vv = im1.select("VV").gt(p["ambang_vv_db"])
         vh = im1.select("VH").gt(p["ambang_vh_db"])
         kuat = vv.Or(vh) if p["aturan_s1"] == "atau" else vv.And(vh)
+
         ndvi = im2.normalizedDifference(["B8", "B4"])
+        ndwi = im2.normalizedDifference(["B3", "B8"])
+        mndwi = im2.normalizedDifference(["B3", "B11"])
+        b11 = im2.select("B11")
+        s2_val = im2.select("B8").mask().unmask(0)
+
+        air_optik = mndwi.gt(0.0).And(ndwi.gt(-0.05)).And(b11.lt(950)).unmask(0)
+        dekat_air = air_optik.focalMax(80, "circle", "meters")
+        lumpur_kering = b11.gte(1150).Or(mndwi.lt(-0.20).And(ndwi.lt(-0.18)))
+        blokir_surut = lumpur_kering.Or(dekat_air.Not()).And(s2_val).unmask(0)
+
         veg = ndvi.gte(p["ambang_ndvi"])
         if p["ambang_ndwi_min"] is not None:
-            veg = veg.Or(im2.normalizedDifference(["B3", "B8"]).lt(p["ambang_ndwi_min"]))
+            veg = veg.Or(ndwi.lt(p["ambang_ndwi_min"]))
         eceng = veg.unmask(0)
-        return kuat.updateMask(air_thumb).updateMask(eceng.Not()).selfMask()
+        return (
+            kuat.updateMask(air_thumb)
+            .updateMask(blokir_surut.Not())
+            .updateMask(eceng.Not())
+            .selfMask()
+        )
 
     def latar(i: int) -> Any:
         return (
             s1_vis(i)
             .visualize(bands=["VV"], min=-25, max=0, palette=["0f172a", "334155", "94a3b8"])
-            .blend(s2_vis(i).select(["B4", "B3", "B2"]).visualize(**{k: v for k, v in VIS_RGB.items() if k != "bands"}))
+            .blend(
+                s2_vis(i)
+                .select(["B4", "B3", "B2"])
+                .visualize(**{k: v for k, v in VIS_RGB.items() if k != "bands"})
+            )
             .blend(garis)
         )
 
@@ -646,8 +872,8 @@ def _layers(s2: list[Any], det: list[dict[str, Any]], imgs: dict[str, Any]) -> d
         "baru": {"image": imgs["baru"], "vis_params": biner(WARNA["baru"])},
         "kja_t1": {"image": det[0]["bersih"], "vis_params": biner(WARNA["t1"])},
         "kja_t2": {"image": det[1]["bersih"], "vis_params": biner(WARNA["t2"])},
-        "s2_t1": {"image": s2[0], "vis_params": dict(VIS_RGB)},
-        "s2_t2": {"image": s2[1], "vis_params": dict(VIS_RGB)},
+        "s2_t1": {"image": s2[0].select(["B4", "B3", "B2"]), "vis_params": dict(VIS_RGB)},
+        "s2_t2": {"image": s2[1].select(["B4", "B3", "B2"]), "vis_params": dict(VIS_RGB)},
     }
 
 
@@ -655,21 +881,24 @@ def _layers(s2: list[Any], det: list[dict[str, Any]], imgs: dict[str, Any]) -> d
 def jalankan_analisis_mingguan(
     tgl_akhir: Any = None,
     *,
+    tgl_pembanding: Any = None,
     konfigurasi: Any = None,
-    jendela_s1_hari: int = 14,
+    jendela_s1_hari: int = 28,
     jendela_s2_hari: int = 45,
     jarak_t1_hari: int = 14,
+    min_citra_s1: int = 3,
+    target_citra_s1: int = 4,
     ambang_vv_db: float = -12.0,
     ambang_vh_db: float = -22.0,
     aturan_s1: str = "dan",
-    ambang_ndvi: float = 0.30,
+    ambang_ndvi: float = 0.28,
     ambang_ndwi_min: float | None = -0.30,
     cs_min: float = 0.60,
-    min_piksel_klaster: int = 5,
-    radius_median_m: int = 15,
+    min_piksel_klaster: int = 4,
+    radius_median_m: int = 10,
     toleransi_geser_m: int = 20,
-    buffer_pantai_m: int = 18,
-    orbit: str | None = "DESCENDING",
+    buffer_pantai_m: int = 20,
+    orbit: str | None = None,
     metode_klaster: str = "vektor",
     maks_detail_klaster: int = 300,
     dimensi_thumb: int = 768,
@@ -678,9 +907,12 @@ def jalankan_analisis_mingguan(
     kredensial: Any = None,
 ) -> dict[str, Any]:
     """
-    Menjalankan analisis perubahan KJA 14-harian (T1 vs T2) di Waduk Jatiluhur.
-    Return baku: {"metrik": {...}, "url_thumbnail": str, "layers_peta": {...}}
-    plus "detail" apabila sertakan_detail=True.
+    Menjalankan analisis perubahan KJA di Waduk Jatiluhur antara dua titik waktu terbaik:
+    - T2: `tgl_akhir` (baku: hari ini)
+    - T1: `tgl_pembanding` bila dipilih langsung dari daftar ketersediaan terbaik, atau
+          `tgl_akhir - jarak_t1_hari` bila tidak diisi.
+    Setiap titik menggunakan komposit multi-lintasan S1 terbaru (`target_citra_s1=4`, minimal 3 citra)
+    dan penjagaan badan air dinamis S2 (MNDWI + SWIR B11 + susut pantai 20 m).
     """
     t0 = time.time()
     inisialisasi_ee(kredensial)
@@ -698,66 +930,65 @@ def jalankan_analisis_mingguan(
     }
 
     akhir2 = _ke_date(tgl_akhir) if tgl_akhir else date.today()
-    akhir1 = akhir2 - timedelta(days=jarak_t1_hari)
-    per = [
-        _periode(akhir1, jendela_s1_hari, jendela_s2_hari),
-        _periode(akhir2, jendela_s1_hari, jendela_s2_hari),
-    ]
+    akhir1 = _ke_date(tgl_pembanding) if tgl_pembanding else (akhir2 - timedelta(days=int(jarak_t1_hari)))
+    if akhir1 >= akhir2:
+        raise ValueError(
+            f"Tanggal pembanding T1 ({akhir1.isoformat()}) harus lebih awal daripada T2 ({akhir2.isoformat()})."
+        )
 
     batas, kotak, info_waduk = dapatkan_batas_waduk()
-    air_img = _topeng_air(batas, buffer_pantai_m)
+    air_jrc = _topeng_air_jrc(batas, buffer_pantai_m)
 
-    orbit_dipakai = orbit
-    catatan_orbit = None
-    s1k = [_koleksi_s1(kotak, *_rentang(*pr["s1"]), orbit_dipakai) for pr in per]
-    s2k = [_koleksi_s2(kotak, *_rentang(*pr["s2"])) for pr in per]
-
-    n = ee.Dictionary({
-        "s1_0": s1k[0].size(),
-        "s1_1": s1k[1].size(),
-        "s2_0": s2k[0].size(),
-        "s2_1": s2k[1].size(),
-        "tgl_s1_0": _tgl_terbaru(s1k[0]),
-        "tgl_s1_1": _tgl_terbaru(s1k[1]),
-        "tgl_s2_0": _tgl_terbaru(s2k[0]),
-        "tgl_s2_1": _tgl_terbaru(s2k[1]),
-    }).getInfo()
-
-    # Fallback aman apabila orbit tunggal kosong pada salah satu jendela
-    if orbit_dipakai and (n["s1_0"] == 0 or n["s1_1"] == 0):
-        catatan_orbit = (
-            f"Orbit tunggal {orbit_dipakai} kosong pada sebagian rentang tanggal; "
-            "memakai fallback seluruh lintasan orbit Sentinel-1 agar analisis tetap berjalan."
+    tgl_targets = [akhir1.isoformat(), akhir2.isoformat()]
+    s1_res = [
+        _komposit_s1_adaptif(
+            kotak,
+            tgl_str,
+            jendela_maks_hari=max(int(jendela_s1_hari), 21),
+            target_citra=int(target_citra_s1),
+            radius_median_m=radius_median_m,
+            orbit=orbit,
         )
-        orbit_dipakai = None
-        s1k = [_koleksi_s1(kotak, *_rentang(*pr["s1"]), None) for pr in per]
-        n.update(
-            ee.Dictionary({
-                "s1_0": s1k[0].size(),
-                "s1_1": s1k[1].size(),
-                "tgl_s1_0": _tgl_terbaru(s1k[0]),
-                "tgl_s1_1": _tgl_terbaru(s1k[1]),
-            }).getInfo()
-        )
+        for tgl_str in tgl_targets
+    ]
+    s2_res = [
+        _komposit_s2_adaptif(kotak, tgl_str, int(jendela_s2_hari), cs_min)
+        for tgl_str in tgl_targets
+    ]
 
-    for i, nama in enumerate(("T1", "T2")):
-        if n[f"s1_{i}"] == 0:
-            raise ValueError(
-                f"Tidak ada citra Sentinel-1 untuk {nama} "
-                f"({per[i]['s1'][0]} s/d {per[i]['s1'][1]}). Perlebar jendela_s1_hari."
-            )
+    s1 = [r[0] for r in s1_res]
+    s1_kols = [r[1] for r in s1_res]
+    n_s1 = [r[2] for r in s1_res]
+    s1_min_tgl = [r[3] for r in s1_res]
+    s1_max_tgl = [r[4] for r in s1_res]
 
-    s1 = [_komposit_s1(k, radius_median_m) for k in s1k]
-    s2 = [_komposit_s2(k, cs_min, n[f"s2_{i}"]) for i, k in enumerate(s2k)]
-    det = [_deteksi(s1[i], s2[i], air_img, p) for i in (0, 1)]
+    s2 = [r[0] for r in s2_res]
+    s2_kols = [r[1] for r in s2_res]
+    n_s2 = [r[2] for r in s2_res]
+    s2_max_tgl = [r[3] for r in s2_res]
+
+    per = [
+        {
+            "akhir": tgl_targets[i],
+            "s1": (s1_min_tgl[i], s1_max_tgl[i]),
+            "s2": (
+                (_ke_date(tgl_targets[i]) - timedelta(days=int(jendela_s2_hari) - 1)).isoformat(),
+                tgl_targets[i],
+            ),
+        }
+        for i in (0, 1)
+    ]
+
+    det = [_deteksi(s1[i], s2[i], air_jrc, p) for i in (0, 1)]
     m = [
-        _metrik(det[i], batas, air_img, n[f"s1_{i}"], n[f"s2_{i}"], cfg, metode_klaster, maks_detail_klaster)
+        _metrik(det[i], batas, n_s1[i], n_s2[i], cfg, metode_klaster, maks_detail_klaster)
         for i in (0, 1)
     ]
     perubahan, imgs = _perubahan(
         det[0]["bersih"],
         det[1]["bersih"],
-        air_img,
+        det[0]["air_aktif"],
+        det[1]["air_aktif"],
         batas,
         toleransi_geser_m,
         m[0]["luas_bersih_ha"],
@@ -765,11 +996,11 @@ def jalankan_analisis_mingguan(
         cfg,
     )
     perubahan["selisih_klaster"] = m[1]["jumlah_klaster"] - m[0]["jumlah_klaster"]
+
     thumb = _thumbnail(
-        s1k,
-        s2k,
-        [n["s2_0"], n["s2_1"]],
-        cs_min,
+        s1_kols,
+        s2_kols,
+        n_s2,
         p,
         batas,
         wilayah_thumb or kotak,
@@ -781,8 +1012,8 @@ def jalankan_analisis_mingguan(
     hasil: dict[str, Any] = {
         "metrik": {
             "minggu_id": f"{iso[0]}-W{iso[1]:02d}",
-            "tgl_citra_s1": n["tgl_s1_1"],
-            "tgl_citra_s2": n["tgl_s2_1"],
+            "tgl_citra_s1": s1_max_tgl[1],
+            "tgl_citra_s2": s2_max_tgl[1],
             "jumlah_klaster": int(m[1]["jumlah_klaster"]),
             "luas_bersih_ha": float(m[1]["luas_bersih_ha"]),
             "estimasi_petak_min": int(m[1]["estimasi_petak_min"]),
@@ -795,21 +1026,19 @@ def jalankan_analisis_mingguan(
     }
     if sertakan_detail:
         peringatan: list[str] = []
-        if catatan_orbit:
-            peringatan.append(catatan_orbit)
         for i, nama in enumerate(("T1", "T2")):
-            if m[i]["jumlah_citra_s1"] < 2:
+            if m[i]["jumlah_citra_s1"] < int(min_citra_s1):
                 peringatan.append(
-                    f"{nama}: hanya {m[i]['jumlah_citra_s1']} citra Sentinel-1 dalam jendela."
+                    f"{nama}: hanya {m[i]['jumlah_citra_s1']} citra Sentinel-1 (di bawah target minimal {min_citra_s1} citra)."
                 )
             if m[i]["jumlah_citra_s2"] == 0:
                 peringatan.append(
-                    f"{nama}: tidak ada citra Sentinel-2, eceng gondok TIDAK tersaring."
+                    f"{nama}: tidak ada citra Sentinel-2, penapisan eceng gondok dan tepian surut tidak aktif."
                 )
             elif m[i]["cakupan_s2_persen"] < 50:
                 peringatan.append(
                     f"{nama}: cakupan Sentinel-2 bebas awan hanya {m[i]['cakupan_s2_persen']}% "
-                    "area air; penyaringan eceng gondok parsial."
+                    "area air; penapisan eceng gondok dan tepian surut parsial."
                 )
         hasil["detail"] = {
             "periode": {"t1": per[0], "t2": per[1]},
@@ -824,11 +1053,13 @@ def jalankan_analisis_mingguan(
                 **p,
                 "jendela_s1_hari": jendela_s1_hari,
                 "jendela_s2_hari": jendela_s2_hari,
-                "jarak_t1_hari": jarak_t1_hari,
+                "jarak_t1_hari": (akhir2 - akhir1).days,
+                "min_citra_s1": min_citra_s1,
+                "target_citra_s1": target_citra_s1,
                 "cs_min": cs_min,
                 "radius_median_m": radius_median_m,
                 "buffer_pantai_m": buffer_pantai_m,
-                "orbit": orbit_dipakai or "SEMUA (fallback)",
+                "orbit": orbit or "MULTI-LINTASAN (ASC+DESC)",
             },
             "durasi_detik": round(time.time() - t0, 1),
         }
