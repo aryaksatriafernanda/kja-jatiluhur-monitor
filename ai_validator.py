@@ -27,6 +27,14 @@ MODEL_CADANGAN = [
 ]
 
 
+SYSTEM_INSTRUCTION_KJA = """Anda adalah analis senior penginderaan jauh dan pengawasan sumber daya perairan Waduk Jatiluhur, Jawa Barat.
+
+Konteks Hidrometeorologi & Operasional Waduk Jatiluhur yang WAJIB Anda pahami:
+1. Musim Hujan Puncak (November hingga Maret): Waduk Jatiluhur mengalami intensitas angin kencang, riak gelombang permukaan air yang kasar, serta tutupan awan tebal dan bayangan awan. Kondisi ini kerap memicu lonjakan hamburan balik radar Sentinel-1 sementara (overestimation luasan deteksi di area perairan terbuka) meskipun jumlah petak KJA fisik tidak bertambah.
+2. Sisa Pelampung Pasca-Penertiban: Pasca operasi penertiban/pembersihan KJA, sering terdapat sisa pelampung drum kosong, bambu, atau kerangka rakit tanpa jaring yang masih mengapung sementara dan memantulkan sinyal radar.
+3. Aturan Anomali Perubahan Luas > 12%: Apabila metrik menunjukkan lonjakan perubahan luas antar-periode melebihi 12% dalam satu siklus, Anda WAJIB mengevaluasi secara kritis apakah penambahan tersebut terlihat sebagai klaster geometris petak KJA fisik yang nyata dan terstruktur rapi, ATAU sekadar indikasi gangguan cuaca musim hujan (riak gelombang/angin/awan) maupun sisa pelampung kosong. Jika terindikasi gangguan cuaca, awan tebal, tutupan eceng gondok, atau lonjakan > 12% tidak terkonfirmasi sebagai petak fisik baru yang jelas, wajib tetapkan status_validasi_ai = "Perlu dicek"."""
+
+
 class CitraTidakTersedia(RuntimeError):
     """Gagal mengunduh komposit citra dari Earth Engine."""
 
@@ -36,17 +44,19 @@ class ValidasiKJASchema(BaseModel):
 
     status_validasi_ai: Literal["Valid", "Perlu dicek"] = Field(
         description=(
-            'Wajib bernilai "Valid" apabila citra menunjukkan susunan petak KJA '
-            'yang jelas dan bersih, atau "Perlu dicek" apabila terdapat gangguan '
-            "awan tebal, kabut pekat, pantulan matahari ekstrem, atau tutupan "
-            "eceng gondok yang mengaburkan batas KJA."
+            'Wajib bernilai "Valid" apabila citra menunjukkan susunan geometris petak KJA '
+            'yang jelas tanpa indikasi gangguan cuaca musim hujan maupun lonjakan anomali, '
+            'atau "Perlu dicek" apabila terdapat gangguan awan tebal, kabut pekat, '
+            "riak gelombang angin kencang musim hujan (November-Maret), tutupan eceng gondok, "
+            "atau lonjakan luas > 12% yang terindikasi sebagai overestimation sementara."
         )
     )
     analisis_pola: str = Field(
         description=(
             "Ringkasan 2 sampai 3 kalimat dalam Bahasa Indonesia formal mengenai "
-            "pergeseran spasial antar-periode T1 ke T2 serta perbandingan "
-            "estimasi jumlah petak terhadap batas kuota Pemprov Jawa Barat "
+            "pergeseran spasial antar-periode T1 ke T2, evaluasi apakah ada indikasi "
+            "gangguan musim hujan/pelampung sisa jika terjadi lonjakan > 12%, serta "
+            "perbandingan estimasi jumlah petak terhadap batas kuota Pemprov Jawa Barat "
             "(11.306 petak)."
         )
     )
@@ -148,12 +158,12 @@ def _bangun_prompt_validasi(
     metrik: dict[str, Any],
     detail: dict[str, Any] | None = None,
 ) -> str:
-    """Menyusun prompt analisis spasial dan visual dengan seluruh konteks metrik dan detail."""
+    """Menyusun prompt analisis spasial dan visual dengan konteks metrik, detail, & musim hujan."""
     minggu_id = metrik.get("minggu_id", "-")
     tgl_s1 = metrik.get("tgl_citra_s1", "-")
     tgl_s2 = metrik.get("tgl_citra_s2", "-")
     jumlah_klaster = metrik.get("jumlah_klaster", 0)
-    luas_bersih_ha = metrik.get("luas_bersih_ha", 0.0)
+    luas_bersih_ha = float(metrik.get("luas_bersih_ha", 0.0) or 0.0)
     petak_min = metrik.get("estimasi_petak_min", 0)
     petak_tengah = metrik.get("estimasi_petak_tengah", 0)
     petak_maks = metrik.get("estimasi_petak_maks", 0)
@@ -166,17 +176,46 @@ def _bangun_prompt_validasi(
     rentang_t1 = (
         f"{t1_win[0]} s.d. {t1_win[1]}"
         if isinstance(t1_win, (list, tuple)) and len(t1_win) == 2
-        else "14 hari sebelumnya"
+        else "periode pembanding sebelumnya"
     )
     rentang_t2 = (
         f"{t2_win[0]} s.d. {t2_win[1]}"
         if isinstance(t2_win, (list, tuple)) and len(t2_win) == 2
-        else "14 hari terakhir"
+        else "periode pengamatan terbaru"
     )
 
     perubahan = detail_data.get("perubahan", {})
+    t1_info = detail_data.get("t1", {})
     t2_info = detail_data.get("t2", {})
     peringatan = detail_data.get("peringatan", [])
+
+    # Hitung persentase perubahan luas antar-periode untuk konteks evaluasi anomali > 12%
+    persen_perubahan_luas: float | None = None
+    try:
+        luas_t1_raw = t1_info.get("luas_bersih_ha")
+        if luas_t1_raw is not None and float(luas_t1_raw) > 0:
+            luas_t1_val = float(luas_t1_raw)
+            luas_t2_val = float(t2_info.get("luas_bersih_ha", luas_bersih_ha))
+            persen_perubahan_luas = round(((luas_t2_val - luas_t1_val) / luas_t1_val) * 100.0, 2)
+        elif metrik.get("delta_luas_ha") is not None:
+            delta_val = float(metrik.get("delta_luas_ha"))
+            luas_prev = luas_bersih_ha - delta_val
+            if luas_prev > 0:
+                persen_perubahan_luas = round((delta_val / luas_prev) * 100.0, 2)
+    except (TypeError, ValueError, ZeroDivisionError):
+        persen_perubahan_luas = None
+
+    # Deteksi indikasi periode puncak musim hujan (bulan November s.d. Maret)
+    musim_hujan_aktif = False
+    for tgl_kandidat in (str(tgl_s1), str(metrik.get("t2_akhir", ""))):
+        if len(tgl_kandidat) >= 7 and tgl_kandidat[4] == "-":
+            try:
+                bulan = int(tgl_kandidat[5:7])
+                if bulan in (11, 12, 1, 2, 3):
+                    musim_hujan_aktif = True
+                    break
+            except ValueError:
+                pass
 
     metrik_tambahan = {
         k: v
@@ -206,6 +245,11 @@ def _bangun_prompt_validasi(
             f"selisih_petak={perubahan.get('selisih_petak_tengah', 0)} petak, "
             f"indikasi_pola=\"{perubahan.get('indikasi_pola', '-')}\"."
         )
+    if persen_perubahan_luas is not None:
+        blok_detail.append(
+            f"Persentase Perubahan Luas Antar-Periode (T1 -> T2): {persen_perubahan_luas:+.2f}% "
+            "(Ambang kewajaran fisik satu siklus: ±12%)."
+        )
     if t2_info:
         blok_detail.append(
             "Kualitas & Penapisan S2 (T2): "
@@ -222,14 +266,19 @@ def _bangun_prompt_validasi(
         blok_detail.append(f"Metrik tambahan: {json.dumps(metrik_tambahan, ensure_ascii=False)}")
 
     info_ekstra = ("\n- " + "\n- ".join(blok_detail)) if blok_detail else ""
+    catatan_musim = (
+        "YA (Periode berada pada puncak musim hujan November–Maret: waspadai riak gelombang angin kencang, awan tebal, dan sisa pelampung kosong pasca-penertiban)"
+        if musim_hujan_aktif
+        else "Di luar puncak musim hujan Nov–Mar (tetap periksa sisa pelampung mengapung atau gangguan awan/eceng gondok)"
+    )
 
-    return f"""Anda adalah analis penginderaan jauh dan pengawasan sumber daya perairan Waduk Jatiluhur.
-Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit komposit (lapisan radar Sentinel-1 + optik RGB Sentinel-2 terbaru + garis batas waduk putih + overlay deteksi KJA T2 oranye #FF9100) dan mencocokkannya dengan metrik kuantitatif siklus pemantauan 14 hari berikut:
+    return f"""Evaluasi citra satelit komposit area Waduk Jatiluhur (lapisan radar Sentinel-1 + optik RGB Sentinel-2 + garis batas waduk putih + overlay deteksi KJA T2 oranye #FF9100) bersama metrik kuantitatif berikut:
 
 - ID Periode / Minggu: {minggu_id}
 - Rentang Pembandingan: Periode Lalu (T1) = {rentang_t1} vs. Terbaru (T2) = {rentang_t2}
 - Tanggal Akuisisi Radar Sentinel-1 Terbaru pada T2 (tgl_citra_s1): {tgl_s1}
 - Tanggal Akuisisi Optik Sentinel-2 Terbaru pada T2 (tgl_citra_s2, "-" berarti kosong): {tgl_s2}
+- Status Musim Hidrometeorologi: {catatan_musim}
 - Jumlah Klaster KJA Terdeteksi: {jumlah_klaster} klaster
 - Luas Bersih Terkalibrasi: {luas_bersih_ha} Ha
 - Estimasi Jumlah Petak (Rentang): {petak_min} s.d. {petak_maks} petak (Nilai Tengah: {petak_tengah} petak)
@@ -238,12 +287,12 @@ Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit kompos
 
 Instruksi Penilaian Wajib:
 1. status_validasi_ai:
-   - Pilih "Valid" jika citra memperlihatkan badan air dan susunan geometris KJA secara cukup bersih tanpa tutupan awan tebal atau hamparan eceng gondok yang menutupi klaster utama.
-   - Pilih "Perlu dicek" jika terlihat awan tebal, bayangan awan pekat, haze berat, ledakan eceng gondok (gulma air berwarna hijau terang menempel pada rakit KJA), atau terdapat peringatan citra S2 kosong/parsial yang berisiko menyebabkan eceng gondok tidak tersaring sempurna.
+   - Pilih "Valid" jika citra memperlihatkan badan air dan susunan geometris petak KJA secara bersih, terstruktur, dan bebas gangguan awan tebal, eceng gondok masif, maupun lonjakan anomali cuaca (> 12%).
+   - Pilih "Perlu dicek" jika terlihat awan tebal/bayangan awan pekat, haze berat, hamparan eceng gondok menempel pada KJA, peringatan cakupan S2 parsial/kosong, ATAU apabila terjadi lonjakan perubahan luas > 12% dalam satu siklus yang terindikasi sebagai gangguan riak gelombang/angin puncak musim hujan (November–Maret) maupun sisa pelampung kosong pasca-penertiban.
 2. analisis_pola:
-   - Tulis tepat 2-3 kalimat padat yang menjelaskan interpretasi visual citra, dinamika pergeseran spasial antar-periode (T1 {rentang_t1} ke T2 {rentang_t2}, dengan akuisisi S1 {tgl_s1} dan S2 {tgl_s2}), serta perbandingan langsung estimasi nilai tengah ({petak_tengah} petak) terhadap batas kuota Pemprov Jabar sebesar 11.306 petak ({persen_kuota}%).
+   - Tulis tepat 2-3 kalimat padat yang menjelaskan interpretasi visual citra, dinamika pergeseran spasial antar-periode (T1 {rentang_t1} ke T2 {rentang_t2}, dengan akuisisi S1 {tgl_s1} dan S2 {tgl_s2}), penilaian apakah perubahan (khususnya bila > 12%) merupakan penambahan petak fisik nyata atau gangguan gelombang musim hujan/sisa pelampung mengapung, serta perbandingan langsung estimasi nilai tengah ({petak_tengah} petak) terhadap batas kuota Pemprov Jabar sebesar 11.306 petak ({persen_kuota}%).
 3. rekomendasi_pengawasan:
-   - Berikan tepat 3 poin rekomendasi aksi lapangan yang konkret, spesifik, dan siap dieksekusi oleh petugas patroli Waduk Jatiluhur (misalnya verifikasi zona padat, pengecekan gulma/awan, atau penertiban klaster baru).
+   - Berikan tepat 3 poin rekomendasi aksi lapangan yang konkret, spesifik, dan siap dieksekusi oleh petugas patroli Waduk Jatiluhur (termasuk verifikasi sisa pelampung kosong pasca-penertiban atau konfirmasi visual saat indikasi gangguan cuaca musim hujan).
 """
 
 
@@ -257,7 +306,8 @@ def validasi_kja_dengan_ai(
 ) -> dict[str, Any]:
     """
     Mengunduh komposit satelit dari url_thumbnail (radar S1 + optik S2 + KJA oranye)
-    dan mengirimkannya ke Gemini API (default gemini-3.8-flash) dengan Structured Outputs.
+    dan mengirimkannya ke Gemini API (default gemini-3.8-flash) dengan Structured Outputs
+    serta system instruction kontekstual musim hujan Waduk Jatiluhur (Nov-Mar).
     Mengangkat error asli secara eksplisit apabila unduhan citra atau panggilan Gemini gagal.
     """
     resolved_key = _resolve_gemini_api_key(api_key)
@@ -281,6 +331,7 @@ def validasi_kja_dengan_ai(
     contents = [image_part, prompt] if image_part is not None else [prompt]
 
     config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_INSTRUCTION_KJA,
         response_mime_type="application/json",
         response_schema=ValidasiKJASchema,
         temperature=0.2,
