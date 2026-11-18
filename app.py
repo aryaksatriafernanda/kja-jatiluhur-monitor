@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -26,7 +27,7 @@ from google.oauth2.service_account import Credentials
 from streamlit_folium import st_folium
 
 import gee_engine
-from ai_validator import validasi_kja_aman
+from ai_validator import validasi_kja_dengan_ai
 
 # ---------------------------------------------------------------------------
 # Konstanta Sistem Terkalibrasi (Sensus Lapangan 2026: 49.807 petak / 249,04 Ha)
@@ -428,6 +429,28 @@ def _ensure_worksheet(
     return ws
 
 
+def _parse_id_float(val: Any) -> float:
+    """Mengurai angka format internasional atau Indonesia ('11.306', '49.807', '249,04', '1.234,5')."""
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip().replace(" ", "")
+    if not s:
+        raise ValueError("Kosong")
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        if re.fullmatch(r"-?\d{1,3}(,\d{3})+", s):
+            s = s.replace(",", "")
+        else:
+            s = s.replace(",", ".")
+    elif re.fullmatch(r"-?\d{1,3}(\.\d{3})+", s):
+        s = s.replace(".", "")
+    return float(s)
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def muat_konfigurasi_sheets() -> tuple[dict[str, Any], str | None]:
     """Membaca konfigurasi dinamis dari tab 'konfigurasi' di Google Sheets."""
@@ -437,12 +460,15 @@ def muat_konfigurasi_sheets() -> tuple[dict[str, Any], str | None]:
         default_rows = [[k, v] for k, v in DEFAULT_CONFIG.items()]
         ws = _ensure_worksheet(ss, TAB_KONFIGURASI, ["parameter", "nilai"], default_rows)
         records = ws.get_all_records()
+        recorded_params: set[str] = set()
         for row in records:
             param = str(row.get("parameter", "")).strip()
             val = row.get("nilai")
+            if param:
+                recorded_params.add(param)
             if param and val not in (None, ""):
                 try:
-                    num_val = float(val)
+                    num_val = _parse_id_float(val)
                     if num_val.is_integer() and param in (
                         "kuota_petak_pemprov",
                         "tahun_kalibrasi",
@@ -456,10 +482,10 @@ def muat_konfigurasi_sheets() -> tuple[dict[str, Any], str | None]:
                     config[param] = val
 
         # Dukungan kompatibilitas mundur jika sheet masih memakai kunci lama 2026
-        if "sensus_petak_2026" in config and "sensus_petak" not in records:
-            config.setdefault("sensus_petak", config["sensus_petak_2026"])
-        if "sensus_luas_ha_2026" in config and "sensus_luas_ha" not in records:
-            config.setdefault("sensus_luas_ha", config["sensus_luas_ha_2026"])
+        if "sensus_petak_2026" in config and "sensus_petak" not in recorded_params:
+            config["sensus_petak"] = config["sensus_petak_2026"]
+        if "sensus_luas_ha_2026" in config and "sensus_luas_ha" not in recorded_params:
+            config["sensus_luas_ha"] = config["sensus_luas_ha_2026"]
         return config, None
     except Exception as exc:
         return config, f"Menggunakan konfigurasi baku lokal ({exc})"
@@ -534,7 +560,7 @@ def _to_float_safe(val: Any, default: float = 0.0) -> float:
     try:
         if val in (None, ""):
             return default
-        return float(str(val).replace(",", "."))
+        return _parse_id_float(val)
     except (TypeError, ValueError):
         return default
 
@@ -543,7 +569,7 @@ def _to_int_safe(val: Any, default: int = 0) -> int:
     try:
         if val in (None, ""):
             return default
-        return int(round(float(str(val).replace(",", "."))))
+        return int(round(_parse_id_float(val)))
     except (TypeError, ValueError):
         return default
 
@@ -621,10 +647,10 @@ def simpan_hasil_ke_sheets(
         "t2_awal": t2_awal,
         "t2_akhir": t2_akhir,
         **metrik,
-        "klaster_tetap": metrik.get("klaster_tetap", 0),
-        "klaster_baru": metrik.get("klaster_baru", 0),
-        "klaster_hilang": metrik.get("klaster_hilang", 0),
-        "klaster_bergeser": metrik.get("klaster_bergeser", 0),
+        "klaster_tetap": perubahan.get("klaster_tetap", metrik.get("klaster_tetap", 0)),
+        "klaster_baru": perubahan.get("klaster_baru", metrik.get("klaster_baru", 0)),
+        "klaster_hilang": perubahan.get("klaster_hilang", metrik.get("klaster_hilang", 0)),
+        "klaster_bergeser": perubahan.get("klaster_bergeser", metrik.get("klaster_bergeser", 0)),
         "delta_luas_ha": delta_luas_val,
         "delta_petak": delta_petak_val,
         "luas_tetap_ha": perubahan.get("luas_tetap_ha", 0.0),
@@ -1088,7 +1114,12 @@ def main() -> None:
                         detail_gee = hasil_gee.get("detail", {})
 
                         st.write("2/3 Memvalidasi citra komposit dengan Gemini 2.5 Flash (ai_validator.py)...")
-                        hasil_ai = validasi_kja_aman(url_thumbnail, metrik, detail=detail_gee)
+                        hasil_ai = validasi_kja_dengan_ai(
+                            url_thumbnail,
+                            metrik,
+                            detail=detail_gee,
+                            izinkan_tanpa_citra=False,
+                        )
 
                         st.write("3/3 Menyimpan hasil metrik, detail perubahan & validasi ke Google Sheets (24 kolom)...")
                         simpan_hasil_ke_sheets(
