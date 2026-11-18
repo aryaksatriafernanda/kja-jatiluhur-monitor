@@ -1,6 +1,6 @@
 """
 Fase 3 — Modul Validasi Multimodal KJA Waduk Jatiluhur
-Menggunakan SDK resmi terbaru google-genai dengan model gemini-2.5-flash
+Menggunakan SDK resmi terbaru google-genai dengan model default gemini-2.5-flash
 dan Structured Outputs (Pydantic JSON Schema).
 """
 
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 from io import BytesIO
 from typing import Any, Literal
@@ -18,14 +19,17 @@ from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, Field
 
-import random
-
-MODEL_GEMINI = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+MODEL_GEMINI = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
 MODEL_CADANGAN = [
     m.strip()
-    for m in os.environ.get("gemini-2.5-flash", "").split(",")
+    for m in os.environ.get("GEMINI_MODEL_CADANGAN", "").split(",")
     if m.strip()
 ]
+
+
+class CitraTidakTersedia(RuntimeError):
+    """Gagal mengunduh komposit citra dari Earth Engine."""
+
 
 class ValidasiKJASchema(BaseModel):
     """Skema JSON pasti untuk hasil validasi multimodal KJA oleh Gemini."""
@@ -79,12 +83,8 @@ def _resolve_gemini_api_key(explicit_api_key: str | None = None) -> str:
     )
 
 
-class CitraTidakTersedia(RuntimeError):
-    """Gagal mengunduh komposit citra dari Earth Engine."""
-
-
 def _ringkas_error_gee(response: requests.Response) -> str:
-    """Mengambil pesan error asli dari body respons GEE."""
+    """Mengambil pesan error asli dari respons GEE tanpa menelannya."""
     try:
         pesan = response.json().get("error", {}).get("message") or response.text
     except Exception:
@@ -98,7 +98,7 @@ def _unduh_komposit_citra(
     timeout_baca: int = 240,
     max_retries: int = 4,
 ) -> tuple[bytes, str]:
-    """Mengunduh komposit dari url_thumbnail (dengan retry) dan menormalkannya ke JPEG."""
+    """Mengunduh gambar komposit dari url_thumbnail (dengan retry) dan menormalkannya ke JPEG."""
     if not url_thumbnail or not url_thumbnail.strip():
         raise ValueError("url_thumbnail tidak boleh kosong.")
 
@@ -110,10 +110,10 @@ def _unduh_komposit_citra(
         try:
             response = requests.get(
                 url,
-                timeout=(timeout_koneksi, timeout_baca),  # (connect, read)
+                timeout=(timeout_koneksi, timeout_baca),
                 headers={"User-Agent": "Jatiluhur-KJA-Monitor/1.0"},
             )
-            if response.ok:
+            if response.ok and response.content:
                 raw_bytes = response.content
                 break
 
@@ -124,12 +124,12 @@ def _unduh_komposit_citra(
             )
             bisa_diulang = response.status_code in (429, 500, 502, 503, 504) or gagal_komputasi
             if not bisa_diulang:
-                break  # 400 permanen (citra kosong, dimensi terlalu besar, dll.)
+                break
         except (requests.Timeout, requests.ConnectionError) as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
         if attempt < max_retries - 1:
-            time.sleep(3 * (2**attempt))  # GEE biasanya sudah men-cache hasil pada percobaan berikutnya
+            time.sleep(2.5 * (2**attempt))
 
     if not raw_bytes:
         raise CitraTidakTersedia(f"Gagal mengunduh citra komposit GEE. {last_error}")
@@ -163,8 +163,16 @@ def _bangun_prompt_validasi(
     periode = detail_data.get("periode", {})
     t1_win = periode.get("t1", {}).get("s1")
     t2_win = periode.get("t2", {}).get("s1")
-    rentang_t1 = f"{t1_win[0]} s.d. {t1_win[1]}" if isinstance(t1_win, (list, tuple)) and len(t1_win) == 2 else "14 hari sebelumnya"
-    rentang_t2 = f"{t2_win[0]} s.d. {t2_win[1]}" if isinstance(t2_win, (list, tuple)) and len(t2_win) == 2 else "14 hari terakhir"
+    rentang_t1 = (
+        f"{t1_win[0]} s.d. {t1_win[1]}"
+        if isinstance(t1_win, (list, tuple)) and len(t1_win) == 2
+        else "14 hari sebelumnya"
+    )
+    rentang_t2 = (
+        f"{t2_win[0]} s.d. {t2_win[1]}"
+        if isinstance(t2_win, (list, tuple)) and len(t2_win) == 2
+        else "14 hari terakhir"
+    )
 
     perubahan = detail_data.get("perubahan", {})
     t2_info = detail_data.get("t2", {})
@@ -203,18 +211,20 @@ def _bangun_prompt_validasi(
             "Kualitas & Penapisan S2 (T2): "
             f"jumlah_citra_s1={t2_info.get('jumlah_citra_s1', '-')}, "
             f"jumlah_citra_s2={t2_info.get('jumlah_citra_s2', '-')}, "
-            f"cakupan_s2_bebas_awan={t2_info.get('cakupan_s2_persen', '-')}% , "
+            f"cakupan_s2_bebas_awan={t2_info.get('cakupan_s2_persen', '-')}%, "
             f"luas_eceng_dibuang={t2_info.get('luas_eceng_dibuang_ha', '-')} Ha."
         )
     if peringatan:
-        blok_detail.append(f"Peringatan Kualitas Citra dari Mesin Satelit: {'; '.join(map(str, peringatan))}")
+        blok_detail.append(
+            f"Peringatan Kualitas Citra dari Mesin Satelit: {'; '.join(map(str, peringatan))}"
+        )
     if metrik_tambahan:
         blok_detail.append(f"Metrik tambahan: {json.dumps(metrik_tambahan, ensure_ascii=False)}")
 
     info_ekstra = ("\n- " + "\n- ".join(blok_detail)) if blok_detail else ""
 
     return f"""Anda adalah analis penginderaan jauh dan pengawasan sumber daya perairan Waduk Jatiluhur.
-Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit komposit area Keramba Jaring Apung (KJA) terbaru (dengan overlay KJA T2 berwarna oranye #FF9100) dan mencocokkannya dengan metrik kuantitatif siklus pemantauan 14 hari berikut:
+Tugas Anda adalah melakukan validasi silang visual terhadap citra satelit komposit (lapisan radar Sentinel-1 + optik RGB Sentinel-2 terbaru + garis batas waduk putih + overlay deteksi KJA T2 oranye #FF9100) dan mencocokkannya dengan metrik kuantitatif siklus pemantauan 14 hari berikut:
 
 - ID Periode / Minggu: {minggu_id}
 - Rentang Pembandingan: Periode Lalu (T1) = {rentang_t1} vs. Terbaru (T2) = {rentang_t2}
@@ -243,20 +253,23 @@ def validasi_kja_dengan_ai(
     api_key: str | None = None,
     max_retries: int = 3,
     detail: dict[str, Any] | None = None,
-    izinkan_tanpa_citra: bool = True,
+    izinkan_tanpa_citra: bool = False,
 ) -> dict[str, Any]:
+    """
+    Mengunduh komposit satelit dari url_thumbnail (radar S1 + optik S2 + KJA oranye)
+    dan mengirimkannya ke Gemini API (default gemini-2.5-flash) dengan Structured Outputs.
+    Mengangkat error asli secara eksplisit apabila unduhan citra atau panggilan Gemini gagal.
+    """
     resolved_key = _resolve_gemini_api_key(api_key)
     prompt = _bangun_prompt_validasi(metrik, detail=detail)
 
     image_part = None
-    catatan_citra = ""
     try:
         image_bytes, mime_type = _unduh_komposit_citra(url_thumbnail)
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-    except CitraTidakTersedia as exc:
+    except CitraTidakTersedia:
         if not izinkan_tanpa_citra:
             raise
-        catatan_citra = str(exc)
         prompt += (
             "\n\nCATATAN PENTING: citra komposit TIDAK dapat diunduh sehingga tidak ada "
             "gambar yang dilampirkan. Analisis hanya berdasarkan metrik di atas, "
@@ -272,10 +285,10 @@ def validasi_kja_dengan_ai(
         response_schema=ValidasiKJASchema,
         temperature=0.2,
     )
-    
+
+    daftar_model = [MODEL_GEMINI, *[m for m in MODEL_CADANGAN if m != MODEL_GEMINI]]
     last_error: Exception | None = None
-    
-    daftar_model = [MODEL_GEMINI, *MODEL_CADANGAN]
+
     for attempt in range(max_retries):
         model_dipakai = daftar_model[min(attempt, len(daftar_model) - 1)]
         try:
@@ -295,14 +308,17 @@ def validasi_kja_dengan_ai(
                 validated = ValidasiKJASchema.model_validate_json(raw_text)
                 hasil = validated.model_dump()
 
-            # Pastikan kepatuhan format akhir
             status = hasil["status_validasi_ai"]
             if status not in ("Valid", "Perlu dicek"):
                 status = "Perlu dicek"
             if image_part is None:
                 status = "Perlu dicek"
 
-            rekomendasi = [str(item).strip() for item in hasil["rekomendasi_pengawasan"] if str(item).strip()]
+            rekomendasi = [
+                str(item).strip()
+                for item in hasil["rekomendasi_pengawasan"]
+                if str(item).strip()
+            ]
             while len(rekomendasi) < 3:
                 rekomendasi.append(
                     "Lakukan patroli verifikasi langsung pada klaster KJA berkepadatan tinggi di lapangan."
@@ -316,25 +332,13 @@ def validasi_kja_dengan_ai(
         except Exception as exc:
             last_error = exc
             kode = getattr(exc, "code", None)
-            if kode in (400, 401, 403, 404):
-                break  # error permanen, retry tidak berguna
+            if kode in (400, 401, 403):
+                break
+            if kode == 404 and attempt >= len(daftar_model) - 1:
+                break
             if attempt < max_retries - 1:
-                # 503/429/500: tunggu lebih lama (5, 10, 20, 40 detik) + sedikit acak
-                time.sleep(5 * (2**attempt) + random.uniform(0, 2))
+                time.sleep(2.0 * (2**attempt) + random.uniform(0, 1.5))
 
-    raise RuntimeError(f"Gagal melakukan validasi AI setelah {max_retries} percobaan: {last_error}")
-
-def validasi_kja_aman(*args, **kwargs) -> dict[str, Any]:
-    """Seperti validasi_kja_dengan_ai, tetapi mengembalikan hasil cadangan jika gagal."""
-    try:
-        return validasi_kja_dengan_ai(*args, **kwargs)
-    except Exception as exc:
-        return {
-            "status_validasi_ai": "Perlu dicek",
-            "analisis_pola": f"Validasi AI belum tersedia ({type(exc).__name__}). Perlu verifikasi manual.",
-            "rekomendasi_pengawasan": [
-                "Jalankan ulang validasi AI beberapa menit kemudian.",
-                "Periksa citra komposit secara visual sebelum data dipakai.",
-                "Lakukan patroli verifikasi pada klaster KJA berkepadatan tinggi.",
-            ],
-        }
+    raise RuntimeError(
+        f"Gagal melakukan validasi AI (model={MODEL_GEMINI}) setelah {max_retries} percobaan: {last_error}"
+    )
