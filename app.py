@@ -15,6 +15,7 @@ import hmac
 import html
 import json
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -47,6 +48,8 @@ SPREADSHEET_DEFAULT_NAME = "Monitoring_KJA_Jatiluhur"
 TAB_KONFIGURASI = "konfigurasi"
 TAB_RIWAYAT = "riwayat_mingguan"
 QUALITY_GATE_MAX_DELTA_HA = 25.0
+QUALITY_GATE_MAX_PCT_CHANGE = 12.0
+BATCH_BACKFILL_DELAY_SEC = 4.0
 
 # Fallback header 24 kolom (A1:X1) hanya digunakan jika tab riwayat_mingguan benar-benar kosong
 STANDARD_RIWAYAT_HEADERS = [
@@ -294,6 +297,12 @@ ul[role="listbox"] li[aria-selected="true"] {{
 }}
 [data-testid="stMetricValue"] {{
   color: #0F172A !important;
+}}
+[data-testid="stProgress"] > div > div > div {{
+  background-color: #E2E8F0 !important;
+}}
+[data-testid="stProgress"] > div > div > div > div {{
+  background-color: #2563EB !important;
 }}
 /* Tombol pil biru lembut (#2563EB) untuk tombol primary maupun form submit */
 div[data-testid="stButton"] > button[kind="primary"],
@@ -1097,8 +1106,97 @@ def saring_riwayat_kualitas_terbaik(
     return df_terkurasi, df_arsip, df_beranotasi
 
 
+def _terapkan_aturan_quality_gate_eksekusi(
+    hasil_ai: dict[str, Any],
+    metrik: dict[str, Any],
+    detail_gee: dict[str, Any] | None,
+    has_existing_history: bool,
+    prev_luas_cadangan: float | None = None,
+) -> tuple[dict[str, Any], bool, str, float | None]:
+    """
+    Mengevaluasi dan menegakkan aturan Quality Gate pada hasil eksekusi baru
+    (baik analisis tunggal Mode Admin maupun Batch Backfill):
+    - Jika perubahan luas antar-periode > 12%, otomatis menandai status_validasi_ai = 'Perlu dicek'.
+    - Mengembalikan (hasil_ai_diperbarui, lolos_quality_gate, alasan_gate, persen_perubahan).
+    """
+    detail_data = detail_gee or {}
+    t1_info = detail_data.get("t1", {})
+    t2_info = detail_data.get("t2", {})
+    perubahan = detail_data.get("perubahan", {})
+
+    luas_t2 = _to_float_safe(t2_info.get("luas_bersih_ha", metrik.get("luas_bersih_ha")), 0.0)
+    luas_t1: float | None = None
+    if t1_info.get("luas_bersih_ha") not in (None, ""):
+        luas_t1 = _to_float_safe(t1_info.get("luas_bersih_ha"), 0.0)
+    elif prev_luas_cadangan is not None and prev_luas_cadangan > 0:
+        luas_t1 = float(prev_luas_cadangan)
+
+    delta_luas = _to_float_safe(
+        perubahan.get("selisih_luas_ha", metrik.get("delta_luas_ha")),
+        round(luas_t2 - luas_t1, 2) if luas_t1 is not None else 0.0,
+    )
+
+    persen_perubahan: float | None = None
+    if luas_t1 is not None and luas_t1 > 0:
+        persen_perubahan = round(((luas_t2 - luas_t1) / luas_t1) * 100.0, 2)
+    elif luas_t2 > 0 and delta_luas != 0 and (luas_t2 - delta_luas) > 0:
+        persen_perubahan = round((delta_luas / (luas_t2 - delta_luas)) * 100.0, 2)
+
+    ai_updated = dict(hasil_ai)
+    status_ai = str(ai_updated.get("status_validasi_ai", "Perlu dicek")).strip()
+    alasan_gate: list[str] = []
+
+    if persen_perubahan is not None and abs(persen_perubahan) > QUALITY_GATE_MAX_PCT_CHANGE:
+        ai_updated["status_validasi_ai"] = "Perlu dicek"
+        alasan_gate.append(
+            f"perubahan luas {persen_perubahan:+.1f}% melebihi batas Quality Gate ±{QUALITY_GATE_MAX_PCT_CHANGE:.0f}% (otomatis ditandai 'Perlu dicek')"
+        )
+    elif status_ai.lower() != "valid":
+        alasan_gate.append(f"status validasi AI '{status_ai or 'Perlu dicek'}'")
+
+    if has_existing_history and abs(delta_luas) > QUALITY_GATE_MAX_DELTA_HA:
+        alasan_gate.append(
+            f"selisih luas {delta_luas:+.2f} Ha melebihi batas wajar ±{QUALITY_GATE_MAX_DELTA_HA:.0f} Ha"
+        )
+
+    lolos = len(alasan_gate) == 0 and str(ai_updated.get("status_validasi_ai", "")).strip().lower() == "valid"
+    return ai_updated, lolos, "; ".join(alasan_gate), persen_perubahan
+
+
+def _bangun_jadwal_backfill(
+    tgl_awal: date,
+    tgl_akhir: date,
+    interval_hari: int,
+) -> list[dict[str, Any]]:
+    """Menyusun daftar periode kronologis (minggu_id, t1, t2) untuk Analisis Historis Sekaligus."""
+    if tgl_awal > tgl_akhir or interval_hari <= 0:
+        return []
+
+    jadwal: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    cursor = tgl_awal
+    step = timedelta(days=int(interval_hari))
+
+    while cursor <= tgl_akhir:
+        iso = cursor.isocalendar()
+        minggu_id = f"{iso[0]}-W{iso[1]:02d}"
+        if minggu_id not in seen_ids:
+            seen_ids.add(minggu_id)
+            t1_dt = cursor - step
+            jadwal.append(
+                {
+                    "minggu_id": minggu_id,
+                    "t1": t1_dt.isoformat(),
+                    "t2": cursor.isoformat(),
+                }
+            )
+        cursor += step
+
+    return jadwal
+
+
 def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
-    """Menampilkan kotak informasi metodologi terkalibrasi dinamis + keterangan Quality Gate."""
+    """Menampilkan kotak informasi metodologi terkalibrasi dinamis + keterangan musim hujan & Quality Gate."""
     tahun_kalibrasi = int(config.get("tahun_kalibrasi", 2026))
     sensus_petak = _fmt_int(config.get("sensus_petak", config.get("sensus_petak_2026", 49807)))
     sensus_ha = _fmt_float(config.get("sensus_luas_ha", config.get("sensus_luas_ha_2026", 249.04)), 2)
@@ -1118,9 +1216,8 @@ def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
         f'yang telah terkalibrasi terhadap data sensus lapangan tahun <strong>{tahun_kalibrasi}</strong> sebesar '
         f'<strong>{sensus_petak} petak ({sensus_ha} Ha)</strong> '
         f'dengan tingkat akurasi empiris ~99% (luasan efektif {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;). '
-        'Sistem secara otomatis menyaring anomali cuaca musim hujan melalui aturan <strong>Quality Gate</strong> '
-        '(hanya periode berstatus <strong>Valid</strong> dengan perubahan luas wajar <strong>&le; 25,0 Ha</strong> yang tampil pada dasbor utama dan grafik tren), '
-        'sementara periode anomali tetap tersimpan sebagai arsip di Google Sheets agar pembaca terhindar dari lonjakan palsu.'
+        'Pada puncak musim hujan (<strong>November&ndash;Maret</strong>), angin kencang, riak gelombang air, dan tutupan awan tebal (serta sisa pelampung pasca-penertiban) dapat memengaruhi pantulan radar sementara; '
+        'oleh karena itu sistem otomatis mengkarantina periode beranomali tinggi (<strong>status: Perlu dicek</strong>, termasuk lonjakan perubahan luas <strong>&gt; 12%</strong> atau <strong>&gt; 25,0 Ha</strong>) melalui aturan <strong>Quality Gate</strong> agar grafik tren publik tetap akurat, sementara catatan anomali tetap tersimpan di arsip Google Sheets.'
         '</div>'
         '</div>'
     )
@@ -1600,10 +1697,17 @@ def main() -> None:
                             izinkan_tanpa_citra=False,
                         )
 
+                        hasil_ai_gate, lolos_gate_run, alasan_gate_run, _ = _terapkan_aturan_quality_gate_eksekusi(
+                            hasil_ai=hasil_ai,
+                            metrik=metrik,
+                            detail_gee=detail_gee,
+                            has_existing_history=(not df_riwayat.empty),
+                        )
+
                         st.write("3/3 Menyimpan hasil metrik, detail perubahan & validasi ke Google Sheets (24 kolom)...")
                         simpan_hasil_ke_sheets(
                             metrik=metrik,
-                            hasil_ai=hasil_ai,
+                            hasil_ai=hasil_ai_gate,
                             url_thumbnail=url_thumbnail,
                             detail=detail_gee,
                             t1_awal=t1_awal_str,
@@ -1612,35 +1716,216 @@ def main() -> None:
                             t2_akhir=t2_akhir_str,
                         )
 
-                        perubahan_run = detail_gee.get("perubahan", {})
-                        delta_luas_run = _to_float_safe(
-                            perubahan_run.get("selisih_luas_ha", metrik.get("delta_luas_ha")),
-                            0.0,
-                        )
-                        status_run = str(hasil_ai.get("status_validasi_ai", "Perlu dicek")).strip()
-                        alasan_gate_run: list[str] = []
-                        if status_run.lower() != "valid":
-                            alasan_gate_run.append(f"status validasi AI '{status_run}'")
-                        if not df_riwayat.empty and abs(delta_luas_run) > QUALITY_GATE_MAX_DELTA_HA:
-                            alasan_gate_run.append(
-                                f"perubahan luas {delta_luas_run:+.2f} Ha melebihi batas wajar ±{QUALITY_GATE_MAX_DELTA_HA:.0f} Ha"
-                            )
-                        lolos_gate_run = len(alasan_gate_run) == 0
-
                         st.session_state["latest_run_result"] = {
                             "metrik": metrik,
                             "url_thumbnail": url_thumbnail,
                             "layers_peta": layers_peta,
                             "detail": detail_gee,
-                            "ai": hasil_ai,
+                            "ai": hasil_ai_gate,
                             "lolos_quality_gate": lolos_gate_run,
-                            "alasan_quality_gate": "; ".join(alasan_gate_run),
+                            "alasan_quality_gate": alasan_gate_run,
                         }
                         status_box.update(label="Analisis selesai dan tersimpan ke database.", state="complete")
                         st.rerun()
                     except Exception as exc:
                         status_box.update(label="Terjadi kendala saat menjalankan analisis.", state="error")
                         st.error(f"Detail error: {exc}")
+
+        # Panel Analisis Historis Sekaligus (Batch Backfill)
+        with st.container(border=True):
+            st.markdown('<div class="itc-section-title">Analisis Historis Sekaligus (Batch Backfill)</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="itc-section-desc">Menjalankan pemetaan GEE dan validasi Gemini secara berurutan untuk rentang tanggal historis, melewati <code>minggu_id</code> yang sudah tersimpan di Google Sheets, menerapkan karantina otomatis Quality Gate (&gt; 12% ditandai <em>Perlu dicek</em>), serta menjaga kuota API dengan jeda 4 detik antar-iterasi.</div>',
+                unsafe_allow_html=True,
+            )
+
+            bc1, bc2, bc3 = st.columns(3)
+            with bc1:
+                batch_tgl_awal = st.date_input(
+                    "Tanggal Awal Historis",
+                    value=date(2026, 1, 1),
+                    key="batch_tgl_awal",
+                )
+            with bc2:
+                batch_tgl_akhir = st.date_input(
+                    "Tanggal Akhir Historis",
+                    value=date.today(),
+                    key="batch_tgl_akhir",
+                )
+            with bc3:
+                batch_interval_hari = int(
+                    st.number_input(
+                        "Interval Hari",
+                        min_value=7,
+                        max_value=60,
+                        value=14,
+                        step=1,
+                        key="batch_interval_hari",
+                    )
+                )
+
+            existing_minggu_ids: set[str] = set()
+            if not df_riwayat.empty and "minggu_id" in df_riwayat.columns:
+                existing_minggu_ids = {
+                    str(v).strip().upper()
+                    for v in df_riwayat["minggu_id"].dropna().tolist()
+                    if str(v).strip()
+                }
+
+            jadwal_batch = _bangun_jadwal_backfill(
+                tgl_awal=batch_tgl_awal,
+                tgl_akhir=batch_tgl_akhir,
+                interval_hari=batch_interval_hari,
+            )
+            jumlah_sudah_ada = sum(
+                1 for item in jadwal_batch if item["minggu_id"].upper() in existing_minggu_ids
+            )
+            jumlah_baru = len(jadwal_batch) - jumlah_sudah_ada
+
+            if batch_tgl_awal > batch_tgl_akhir:
+                st.warning("Tanggal Awal Historis tidak boleh melebihi Tanggal Akhir Historis.")
+            else:
+                st.caption(
+                    f"Rencana Batch Backfill: {len(jadwal_batch)} periode terdeteksi "
+                    f"({jumlah_baru} periode baru akan diproses; {jumlah_sudah_ada} minggu_id sudah ada dan akan dilewati)."
+                )
+
+            run_batch_clicked = st.button(
+                "Jalankan Analisis Historis Massal",
+                type="primary",
+                disabled=(not gee_ok) or (batch_tgl_awal > batch_tgl_akhir) or (len(jadwal_batch) == 0),
+                key="btn_run_batch_backfill",
+            )
+
+            if run_batch_clicked:
+                progress_bar = st.progress(0.0, text="Mempersiapkan antrean Analisis Historis Massal...")
+                status_line = st.empty()
+                log_rows: list[str] = []
+                saved_valid = 0
+                saved_quarantined = 0
+                skipped_existing = 0
+                failed_count = 0
+                has_history_flag = not df_riwayat.empty
+                prev_luas_batch: float | None = None
+                if not df_riwayat.empty and "luas_bersih_ha" in df_riwayat.columns:
+                    prev_luas_batch = _to_float_safe(df_riwayat.iloc[-1].get("luas_bersih_ha"), 0.0) or None
+
+                total_items = len(jadwal_batch)
+                for idx, item in enumerate(jadwal_batch):
+                    m_id = item["minggu_id"]
+                    t1_str = item["t1"]
+                    t2_str = item["t2"]
+                    pct_done = idx / max(total_items, 1)
+
+                    if m_id.upper() in existing_minggu_ids:
+                        skipped_existing += 1
+                        msg = f"[{idx + 1}/{total_items}] {m_id} ({t2_str}): Dilewati — minggu_id sudah ada di riwayat_mingguan."
+                        log_rows.append(msg)
+                        status_line.caption(msg)
+                        progress_bar.progress((idx + 1) / total_items, text=msg)
+                        continue
+
+                    try:
+                        status_line.caption(
+                            f"[{idx + 1}/{total_items}] Menjalankan GEE & Gemini AI untuk {m_id} (T1 {t1_str} → T2 {t2_str})..."
+                        )
+                        progress_bar.progress(
+                            pct_done,
+                            text=f"[{idx + 1}/{total_items}] Memproses {m_id} ({t2_str})...",
+                        )
+
+                        hasil_gee = gee_engine.jalankan_analisis_mingguan(
+                            tgl_akhir=t2_str,
+                            tgl_pembanding=t1_str,
+                            konfigurasi=config,
+                            sertakan_detail=True,
+                            kredensial=_get_service_account_dict(),
+                        )
+                        metrik_b = hasil_gee["metrik"]
+                        url_thumb_b = hasil_gee["url_thumbnail"]
+                        detail_b = hasil_gee.get("detail", {})
+
+                        periode_b = detail_b.get("periode", {})
+                        t1_r = periode_b.get("t1", {}).get("s1", [t1_str, t1_str])
+                        t2_r = periode_b.get("t2", {}).get("s1", [t2_str, t2_str])
+                        t1_awal_b = str(t1_r[0]) if len(t1_r) == 2 else t1_str
+                        t1_akhir_b = str(t1_r[1]) if len(t1_r) == 2 else t1_str
+                        t2_awal_b = str(t2_r[0]) if len(t2_r) == 2 else t2_str
+                        t2_akhir_b = str(t2_r[1]) if len(t2_r) == 2 else t2_str
+
+                        hasil_ai_b = validasi_kja_dengan_ai(
+                            url_thumb_b,
+                            metrik_b,
+                            detail=detail_b,
+                            izinkan_tanpa_citra=False,
+                        )
+                        hasil_ai_gate_b, lolos_b, alasan_b, pct_luas_b = _terapkan_aturan_quality_gate_eksekusi(
+                            hasil_ai=hasil_ai_b,
+                            metrik=metrik_b,
+                            detail_gee=detail_b,
+                            has_existing_history=has_history_flag,
+                            prev_luas_cadangan=prev_luas_batch,
+                        )
+
+                        simpan_hasil_ke_sheets(
+                            metrik=metrik_b,
+                            hasil_ai=hasil_ai_gate_b,
+                            url_thumbnail=url_thumb_b,
+                            detail=detail_b,
+                            t1_awal=t1_awal_b,
+                            t1_akhir=t1_akhir_b,
+                            t2_awal=t2_awal_b,
+                            t2_akhir=t2_akhir_b,
+                        )
+
+                        existing_minggu_ids.add(m_id.upper())
+                        has_history_flag = True
+                        luas_b_val = _to_float_safe(metrik_b.get("luas_bersih_ha"), 0.0)
+                        if luas_b_val > 0:
+                            prev_luas_batch = luas_b_val
+
+                        pct_txt = f" ({pct_luas_b:+.1f}%)" if pct_luas_b is not None else ""
+                        if lolos_b:
+                            saved_valid += 1
+                            msg = f"[{idx + 1}/{total_items}] {m_id} ({t2_str}): Tersimpan Valid — {luas_b_val:.2f} Ha{pct_txt}."
+                        else:
+                            saved_quarantined += 1
+                            msg = f"[{idx + 1}/{total_items}] {m_id} ({t2_str}): Tersimpan Karantina ('Perlu dicek') — {luas_b_val:.2f} Ha{pct_txt} [{alasan_b}]."
+                        log_rows.append(msg)
+                        status_line.caption(msg)
+                    except Exception as exc:
+                        failed_count += 1
+                        msg = f"[{idx + 1}/{total_items}] {m_id} ({t2_str}): Gagal/Dilewati — {exc}"
+                        log_rows.append(msg)
+                        status_line.caption(msg)
+
+                    progress_bar.progress((idx + 1) / total_items, text=msg)
+                    if idx < total_items - 1:
+                        status_line.caption(f"{msg} (jeda kuota API {int(BATCH_BACKFILL_DELAY_SEC)} detik...)")
+                        time.sleep(BATCH_BACKFILL_DELAY_SEC)
+
+                st.session_state["batch_backfill_summary"] = {
+                    "total": total_items,
+                    "saved_valid": saved_valid,
+                    "saved_quarantined": saved_quarantined,
+                    "skipped_existing": skipped_existing,
+                    "failed": failed_count,
+                    "logs": log_rows,
+                }
+                st.rerun()
+
+            batch_summary = st.session_state.get("batch_backfill_summary")
+            if isinstance(batch_summary, dict):
+                st.success(
+                    f"Analisis Historis Massal selesai ({batch_summary.get('total', 0)} periode): "
+                    f"{batch_summary.get('saved_valid', 0)} tersimpan Valid, "
+                    f"{batch_summary.get('saved_quarantined', 0)} dikarantina (Perlu dicek), "
+                    f"{batch_summary.get('skipped_existing', 0)} dilewati (sudah ada), "
+                    f"{batch_summary.get('failed', 0)} gagal."
+                )
+                with st.expander("Lihat Log Detail Analisis Historis Massal", expanded=False):
+                    for line in batch_summary.get("logs", []):
+                        st.caption(line)
 
         # Form Kalibrasi & Pembaruan Data Sensus Lapangan (Tahun 2027 dst.)
         with st.container(border=True):
