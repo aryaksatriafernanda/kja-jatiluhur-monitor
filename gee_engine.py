@@ -532,42 +532,79 @@ def _perubahan(
 # ============================ 8. THUMBNAIL & LAYER PETA ============================
 def _buat_thumb_url(citra: Any, wilayah: Any, dimensi: int) -> str:
     region = wilayah.getInfo()["coordinates"] if isinstance(wilayah, ee.Geometry) else wilayah
+    dim_aman = min(int(dimensi or 768), 768)
     kandidat_dim = []
-    for d in (dimensi, 768, 512):
+    for d in (dim_aman, 512):
         if d not in kandidat_dim and d > 0:
             kandidat_dim.append(d)
     last_exc: Exception | None = None
     for d in kandidat_dim:
         try:
-            return citra.getThumbURL({"region": region, "dimensions": d, "format": "png"})
+            return citra.getThumbURL({"region": region, "dimensions": d, "format": "jpg"})
         except Exception as exc:
             last_exc = exc
     raise RuntimeError(f"Gagal membuat URL thumbnail GEE: {last_exc}")
 
 
 def _thumbnail(
-    s1: list[Any],
-    s2: list[Any],
-    det: list[dict[str, Any]],
-    imgs: dict[str, Any],
+    s1k: list[Any],
+    s2k: list[Any],
+    n_s2_list: list[int],
+    cs_min: float,
+    p: dict[str, Any],
     batas: Any,
     wilayah: Any,
     dimensi: int,
     lengkap: bool,
 ) -> dict[str, str]:
+    """
+    Merender thumbnail ringan (tanpa reproject 10 m paksa & format JPG 3-band <= 768 px)
+    agar tidak melampaui batas memori 80 MiB getThumbURL GEE, sambil tetap menampilkan
+    latar radar Sentinel-1, optik RGB Sentinel-2, batas waduk, dan deteksi KJA oranye.
+    """
     garis = (
         ee.Image()
         .byte()
         .paint(ee.FeatureCollection([ee.Feature(batas)]), 1, 1)
         .visualize(min=0, max=1, palette=["FFFFFF", "FFFFFF"])
     )
+    air_thumb = ee.Image(0).paint(ee.FeatureCollection([ee.Feature(batas)]), 1).selfMask()
+
+    def s1_vis(i: int) -> Any:
+        return s1k[i].median().select(["VV", "VH"])
+
+    def s2_vis(i: int) -> Any:
+        if n_s2_list[i] == 0:
+            return (
+                ee.Image.constant([0, 0, 0, 0])
+                .rename(["B2", "B3", "B4", "B8"])
+                .updateMask(ee.Image.constant(0))
+            )
+        return (
+            s2k[i]
+            .map(lambda im: im.updateMask(im.select("cs_cdf").gte(cs_min)))
+            .select(["B2", "B3", "B4", "B8"])
+            .median()
+        )
+
+    def kja_vis(i: int) -> Any:
+        im1 = s1_vis(i)
+        im2 = s2_vis(i)
+        vv = im1.select("VV").gt(p["ambang_vv_db"])
+        vh = im1.select("VH").gt(p["ambang_vh_db"])
+        kuat = vv.Or(vh) if p["aturan_s1"] == "atau" else vv.And(vh)
+        ndvi = im2.normalizedDifference(["B8", "B4"])
+        veg = ndvi.gte(p["ambang_ndvi"])
+        if p["ambang_ndwi_min"] is not None:
+            veg = veg.Or(im2.normalizedDifference(["B3", "B8"]).lt(p["ambang_ndwi_min"]))
+        eceng = veg.unmask(0)
+        return kuat.updateMask(air_thumb).updateMask(eceng.Not()).selfMask()
 
     def latar(i: int) -> Any:
-        # Dasar radar Sentinel-1 + lapisan optik RGB Sentinel-2 di atasnya agar awan & eceng gondok tampak oleh AI
         return (
-            s1[i]
+            s1_vis(i)
             .visualize(bands=["VV"], min=-25, max=0, palette=["0f172a", "334155", "94a3b8"])
-            .blend(s2[i].visualize(**VIS_RGB))
+            .blend(s2_vis(i).select(["B4", "B3", "B2"]).visualize(**{k: v for k, v in VIS_RGB.items() if k != "bands"}))
             .blend(garis)
         )
 
@@ -575,19 +612,26 @@ def _thumbnail(
         return img.visualize(min=0, max=1, palette=["000000", warna])
 
     f2 = latar(1)
+    k_t2 = kja_vis(1)
     out = {
-        "kja_t2": _buat_thumb_url(
-            f2.blend(biner(det[1]["bersih"], WARNA["t2"])), wilayah, dimensi
-        )
+        "kja_t2": _buat_thumb_url(f2.blend(biner(k_t2, WARNA["t2"])), wilayah, dimensi)
     }
     if lengkap:
+        k_t1 = kja_vis(0)
         out["latar_t2"] = _buat_thumb_url(f2, wilayah, dimensi)
         out["kja_t1"] = _buat_thumb_url(
-            latar(0).blend(biner(det[0]["bersih"], WARNA["t1"])), wilayah, dimensi
+            latar(0).blend(biner(k_t1, WARNA["t1"])), wilayah, dimensi
         )
-        perub = f2
-        for k in ("tetap", "bergeser", "baru"):
-            perub = perub.blend(biner(imgs[k], WARNA[k]))
+        t1m = k_t1.unmask(0)
+        t2m = k_t2.unmask(0)
+        tetap_t = t2m.And(t1m).updateMask(air_thumb).selfMask()
+        berg_t = t1m.And(t2m.Not()).updateMask(air_thumb).selfMask()
+        baru_t = t2m.And(t1m.Not()).updateMask(air_thumb).selfMask()
+        perub = (
+            f2.blend(biner(tetap_t, WARNA["tetap"]))
+            .blend(biner(berg_t, WARNA["bergeser"]))
+            .blend(biner(baru_t, WARNA["baru"]))
+        )
         out["perubahan"] = _buat_thumb_url(perub, wilayah, dimensi)
     return out
 
@@ -628,7 +672,7 @@ def jalankan_analisis_mingguan(
     orbit: str | None = "DESCENDING",
     metode_klaster: str = "vektor",
     maks_detail_klaster: int = 300,
-    dimensi_thumb: int = 1024,
+    dimensi_thumb: int = 768,
     wilayah_thumb: Any = None,
     sertakan_detail: bool = False,
     kredensial: Any = None,
@@ -722,7 +766,15 @@ def jalankan_analisis_mingguan(
     )
     perubahan["selisih_klaster"] = m[1]["jumlah_klaster"] - m[0]["jumlah_klaster"]
     thumb = _thumbnail(
-        s1, s2, det, imgs, batas, wilayah_thumb or kotak, dimensi_thumb, sertakan_detail
+        s1k,
+        s2k,
+        [n["s2_0"], n["s2_1"]],
+        cs_min,
+        p,
+        batas,
+        wilayah_thumb or kotak,
+        dimensi_thumb,
+        sertakan_detail,
     )
 
     iso = akhir2.isocalendar()
