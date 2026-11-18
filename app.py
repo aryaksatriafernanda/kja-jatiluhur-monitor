@@ -1076,7 +1076,7 @@ def main() -> None:
         with st.container(border=True):
             st.markdown('<div class="itc-section-title">Panel Eksekusi Analisis Berkala (Siklus 14 Hari)</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="itc-section-desc">Menjalankan mesin pemetaan Google Earth Engine (gee_engine.py), validasi visual Gemini 2.5 Flash, dan penyimpanan otomatis ke Google Sheets.</div>',
+                '<div class="itc-section-desc">Menjalankan mesin pemetaan Google Earth Engine (gee_engine.py), validasi visual Gemini 3.8 Flash, dan penyimpanan otomatis ke Google Sheets.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -1128,7 +1128,7 @@ def main() -> None:
                         layers_peta = hasil_gee.get("layers_peta")
                         detail_gee = hasil_gee.get("detail", {})
 
-                        st.write("2/3 Memvalidasi citra komposit dengan Gemini 2.5 Flash (ai_validator.py)...")
+                        st.write("2/3 Memvalidasi citra komposit dengan Gemini 3.8 Flash (ai_validator.py)...")
                         hasil_ai = validasi_kja_dengan_ai(
                             url_thumbnail,
                             metrik,
