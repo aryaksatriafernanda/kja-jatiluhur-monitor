@@ -227,6 +227,21 @@ input[type="number"] {{
   background-color: #F8FAFC !important;
   padding: 16px !important;
 }}
+[data-testid="stExpander"],
+[data-testid="stExpander"] > details,
+[data-testid="stExpander"] details > summary,
+[data-testid="stStatusWidget"],
+[data-testid="stStatusWidget"] > div {{
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  border-color: #E2E8F0 !important;
+}}
+[data-testid="stExpander"] details > summary p,
+[data-testid="stExpander"] details > summary span,
+[data-testid="stExpander"] details > summary svg {{
+  color: #0F172A !important;
+  fill: #0F172A !important;
+}}
 /* Tombol pil biru lembut (#2563EB) untuk tombol primary maupun form submit */
 div[data-testid="stButton"] > button[kind="primary"],
 div[data-testid="stFormSubmitButton"] > button,
