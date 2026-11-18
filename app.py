@@ -12,6 +12,7 @@ Fitur:
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -242,6 +243,55 @@ input[type="number"] {{
   color: #0F172A !important;
   fill: #0F172A !important;
 }}
+/* Paksa tema terang bersih pada banner alert (st.warning/info/error/success) dan menu dropdown */
+[data-testid="stAlert"],
+[data-testid="stAlertContainer"],
+div[data-baseweb="notification"] {{
+  background-color: #FFFBEB !important;
+  border: 1px solid #FDE68A !important;
+  border-radius: 10px !important;
+  color: #92400E !important;
+}}
+[data-testid="stAlert"] p,
+[data-testid="stAlert"] span,
+[data-testid="stAlert"] div,
+[data-testid="stAlertContainer"] p,
+[data-testid="stAlertContainer"] span,
+[data-testid="stAlertContainer"] div {{
+  color: #92400E !important;
+}}
+[data-testid="stAlert"] svg,
+[data-testid="stAlertContainer"] svg {{
+  color: #D97706 !important;
+  fill: #D97706 !important;
+}}
+[data-baseweb="popover"],
+[data-baseweb="popover"] > div,
+[data-baseweb="menu"],
+ul[role="listbox"],
+ul[role="listbox"] li {{
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+  border-color: #E2E8F0 !important;
+}}
+ul[role="listbox"] li:hover,
+ul[role="listbox"] li[aria-selected="true"] {{
+  background-color: #EFF6FF !important;
+  color: #1D4ED8 !important;
+}}
+[data-testid="stMetric"] {{
+  background-color: #F8FAFC !important;
+  border: 1px solid #E2E8F0 !important;
+  border-radius: 10px !important;
+  padding: 10px 12px !important;
+}}
+[data-testid="stMetricLabel"] p,
+[data-testid="stMetricLabel"] label {{
+  color: #64748B !important;
+}}
+[data-testid="stMetricValue"] {{
+  color: #0F172A !important;
+}}
 /* Tombol pil biru lembut (#2563EB) untuk tombol primary maupun form submit */
 div[data-testid="stButton"] > button[kind="primary"],
 div[data-testid="stFormSubmitButton"] > button,
@@ -262,7 +312,8 @@ div[data-testid="stFormSubmitButton"] > button:hover {{
   background-color: var(--accent-blue-hover) !important;
   border-color: var(--accent-blue-hover) !important;
 }}
-div[data-testid="stButton"] > button[kind="secondary"] {{
+div[data-testid="stButton"] > button[kind="secondary"],
+div[data-testid="stDownloadButton"] > button {{
   background-color: var(--bg-card) !important;
   border: 1px solid var(--border-subtle) !important;
   color: var(--text-dark) !important;
@@ -270,6 +321,11 @@ div[data-testid="stButton"] > button[kind="secondary"] {{
   font-weight: 600 !important;
   font-size: 13px !important;
   padding: 0.45rem 1.05rem !important;
+}}
+div[data-testid="stButton"] > button[kind="secondary"]:hover,
+div[data-testid="stDownloadButton"] > button:hover {{
+  background-color: #F1F5F9 !important;
+  border-color: #CBD5E1 !important;
 }}
 .itc-card {{
   background-color: var(--bg-card);
@@ -377,6 +433,64 @@ div[data-testid="stVerticalBlockBorderWrapper"] {{
   border-radius: 12px !important;
   padding: 16px 18px !important;
 }}
+/* Tabel Riwayat Terang Gaya ITC Trade Centre */
+.itc-table-wrap {{
+  width: 100%;
+  max-height: 440px;
+  overflow: auto;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  background-color: #FFFFFF;
+}}
+.itc-table {{
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  color: #0F172A;
+  background-color: #FFFFFF;
+  text-align: left;
+}}
+.itc-table thead th {{
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background-color: #F8FAFC;
+  color: #475569;
+  font-weight: 600;
+  font-size: 11.5px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #E2E8F0;
+  white-space: nowrap;
+}}
+.itc-table tbody td {{
+  padding: 9px 12px;
+  border-bottom: 1px solid #F1F5F9;
+  color: #0F172A;
+  vertical-align: top;
+  white-space: nowrap;
+}}
+.itc-table tbody tr:hover {{
+  background-color: #F8FAFC;
+}}
+.itc-table-mono {{
+  font-family: 'JetBrains Mono', 'Plus Jakarta Sans', monospace;
+  font-variant-numeric: tabular-nums;
+}}
+.itc-table-wrap-text {{
+  white-space: normal !important;
+  min-width: 220px;
+  max-width: 340px;
+  line-height: 1.45;
+  color: #334155 !important;
+}}
+.itc-table a {{
+  color: #2563EB;
+  font-weight: 600;
+  text-decoration: none;
+}}
+.itc-table a:hover {{
+  text-decoration: underline;
+}}
 </style>
 """
     st.markdown(css_block, unsafe_allow_html=True)
@@ -404,6 +518,23 @@ def init_earth_engine() -> tuple[bool, str]:
         return True, "Google Earth Engine terhubung."
     except Exception as exc:
         return False, f"Inisialisasi GEE gagal: {exc}"
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def muat_daftar_tanggal_terbaik() -> tuple[list[dict[str, Any]], str | None]:
+    """Memindai daftar tanggal ketersediaan citra terbaik GEE (min 3 citra S1 + S2 awan rendah)."""
+    try:
+        opsi = gee_engine.daftar_tanggal_terbaik(
+            jumlah_hari_belakang=150,
+            min_citra_s1=3,
+            jendela_s1_maks_hari=28,
+            jendela_s2_hari=45,
+            jarak_antar_opsi_hari=7,
+            kredensial=_get_service_account_dict(),
+        )
+        return opsi, None
+    except Exception as exc:
+        return [], f"Gagal memindai ketersediaan tanggal terbaik GEE: {exc}"
 
 
 @st.cache_resource(show_spinner=False)
@@ -904,18 +1035,171 @@ def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
         'Catatan Metodologi &amp; Kalibrasi Penginderaan Jauh'
         '</div>'
         '<div style="font-size: 12.5px; color: #64748B; line-height: 1.55;">'
-        'Angka jumlah petak dan luasan KJA merupakan hasil estimasi fusi satelit '
-        '<strong>Sentinel-1 SAR (radar 14 hari)</strong> dan <strong>Sentinel-2 optik (penapisan eceng gondok 45 hari)</strong> '
+        'Angka jumlah petak dan luasan KJA merupakan hasil estimasi komposit terbaik '
+        '<strong>Sentinel-1 SAR multi-lintasan (minimal 3&ndash;4 citra dalam jendela hingga 28 hari)</strong> dan '
+        '<strong>Sentinel-2 optik (penapisan eceng gondok &amp; topeng tepian surut dinamis MNDWI/SWIR 45 hari)</strong> '
         f'yang telah terkalibrasi terhadap data sensus lapangan tahun <strong>{tahun_kalibrasi}</strong> sebesar '
         f'<strong>{sensus_petak} petak ({sensus_ha} Ha)</strong> '
         f'dengan tingkat akurasi empiris ~99% (asumsi luasan efektif per petak {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;). '
-        'Pada setiap perbandingan siklus, <strong>T1 adalah kondisi periode sebelumnya (14 hari lalu)</strong> dan '
-        '<strong>T2 adalah kondisi pemantauan terbaru</strong>. Data ini berfungsi sebagai '
-        '<strong>sistem peringatan dini (early warning system)</strong> untuk mendukung verifikasi patroli lapangan pengawas Waduk Jatiluhur.'
+        'Pada setiap perbandingan, <strong>T1 adalah titik waktu pembanding sebelumnya</strong> dan '
+        '<strong>T2 adalah titik waktu pemantauan terbaru</strong> yang dipilih berdasarkan ketersediaan data terbaik di GEE (mis. selang 14 atau ~30 hari). '
+        'Dasbor ini berfungsi sebagai <strong>sistem peringatan dini (early warning system)</strong> untuk mendukung verifikasi patroli pengawas Waduk Jatiluhur.'
         '</div>'
         '</div>'
     )
     st.markdown(html_disclaimer, unsafe_allow_html=True)
+
+
+def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
+    """Merender tabel riwayat pemantauan bertema putih terang bergaya ITC lengkap dengan filter dan unduh CSV."""
+    if df.empty:
+        st.info("Belum ada baris riwayat di tab riwayat_mingguan.")
+        return
+
+    fc1, fc2, fc3 = st.columns([2.5, 1.3, 1.2], vertical_alignment="bottom")
+    with fc1:
+        cari_teks = st.text_input(
+            "Cari riwayat",
+            placeholder="Cari periode, tanggal citra, atau ringkasan AI...",
+            key="riwayat_search_input",
+        ).strip().lower()
+    with fc2:
+        filter_status = st.selectbox(
+            "Filter status AI",
+            options=["Semua", "Valid", "Perlu dicek"],
+            index=0,
+            key="riwayat_status_filter",
+        )
+    with fc3:
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Unduh CSV Riwayat",
+            data=csv_bytes,
+            file_name="riwayat_mingguan_kja_jatiluhur.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    df_tampil = df.copy()
+    if filter_status != "Semua" and "status_validasi_ai" in df_tampil.columns:
+        df_tampil = df_tampil[
+            df_tampil["status_validasi_ai"].astype(str).str.strip().str.lower()
+            == filter_status.lower()
+        ]
+    if cari_teks:
+        mask_cari = df_tampil.apply(
+            lambda row: cari_teks in " ".join(str(v) for v in row.values).lower(),
+            axis=1,
+        )
+        df_tampil = df_tampil[mask_cari]
+
+    if df_tampil.empty:
+        st.info("Tidak ada baris riwayat yang cocok dengan kata kunci atau filter status.")
+        return
+
+    # Tampilkan urutan terbaru di paling atas
+    df_tampil = df_tampil.iloc[::-1].reset_index(drop=True)
+
+    kolom_mono = {
+        "minggu_id",
+        "t1_awal",
+        "t1_akhir",
+        "t2_awal",
+        "t2_akhir",
+        "tgl_citra_s1",
+        "tgl_citra_s2",
+        "jumlah_klaster",
+        "luas_bersih_ha",
+        "estimasi_petak_min",
+        "estimasi_petak_tengah",
+        "estimasi_petak_maks",
+        "persen_kuota",
+        "klaster_tetap",
+        "klaster_baru",
+        "klaster_hilang",
+        "klaster_bergeser",
+        "delta_luas_ha",
+        "delta_petak",
+        "dicatat_pada",
+    }
+    kolom_int_fmt = {
+        "jumlah_klaster",
+        "estimasi_petak_min",
+        "estimasi_petak_tengah",
+        "estimasi_petak_maks",
+        "klaster_tetap",
+        "klaster_baru",
+        "klaster_hilang",
+        "klaster_bergeser",
+        "delta_petak",
+    }
+    kolom_float_fmt = {"luas_bersih_ha", "delta_luas_ha"}
+
+    headers_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in df_tampil.columns)
+    rows_html_parts: list[str] = []
+
+    for _, row in df_tampil.iterrows():
+        cells: list[str] = []
+        for col in df_tampil.columns:
+            val = row[col]
+            raw_str = "" if pd.isna(val) else str(val).strip()
+            col_lower = str(col).strip().lower()
+
+            if col_lower == "status_validasi_ai":
+                badge_cls = "status-valid" if raw_str.lower() == "valid" else "status-check"
+                label = html.escape(raw_str or "Perlu dicek")
+                cells.append(f'<td><span class="status-badge {badge_cls}">{label}</span></td>')
+            elif col_lower in ("url_peta", "url_thumbnail") and raw_str.startswith("http"):
+                safe_url = html.escape(raw_str, quote=True)
+                cells.append(
+                    f'<td><a href="{safe_url}" target="_blank" rel="noopener noreferrer">Lihat Citra</a></td>'
+                )
+            elif col_lower in ("ringkasan_ai", "rekomendasi_ai", "analisis_pola"):
+                singkat = raw_str if len(raw_str) <= 130 else raw_str[:127] + "..."
+                tooltip = html.escape(raw_str, quote=True)
+                cells.append(
+                    f'<td class="itc-table-wrap-text" title="{tooltip}">{html.escape(singkat)}</td>'
+                )
+            elif col_lower in kolom_int_fmt and raw_str:
+                try:
+                    num = _parse_id_float(raw_str)
+                    teks_fmt = _fmt_int(num)
+                    if col_lower == "delta_petak" and num > 0:
+                        teks_fmt = f"+{teks_fmt}"
+                    cells.append(f'<td class="itc-table-mono">{html.escape(teks_fmt)}</td>')
+                except (TypeError, ValueError):
+                    cells.append(f'<td class="itc-table-mono">{html.escape(raw_str)}</td>')
+            elif col_lower in kolom_float_fmt and raw_str:
+                try:
+                    num = _parse_id_float(raw_str)
+                    teks_fmt = _fmt_float(num, 2)
+                    if col_lower == "delta_luas_ha" and num > 0:
+                        teks_fmt = f"+{teks_fmt}"
+                    cells.append(f'<td class="itc-table-mono">{html.escape(teks_fmt)}</td>')
+                except (TypeError, ValueError):
+                    cells.append(f'<td class="itc-table-mono">{html.escape(raw_str)}</td>')
+            elif col_lower == "persen_kuota" and raw_str:
+                try:
+                    teks_fmt = f"{_fmt_float(_parse_id_float(raw_str), 1)}%"
+                    cells.append(f'<td class="itc-table-mono">{html.escape(teks_fmt)}</td>')
+                except (TypeError, ValueError):
+                    cells.append(f'<td class="itc-table-mono">{html.escape(raw_str)}</td>')
+            else:
+                cls_attr = ' class="itc-table-mono"' if col_lower in kolom_mono else ""
+                cells.append(f"<td{cls_attr}>{html.escape(raw_str or '-')}</td>")
+
+        rows_html_parts.append(f"<tr>{''.join(cells)}</tr>")
+
+    table_html = (
+        '<div class="itc-table-wrap">'
+        '<table class="itc-table">'
+        f"<thead><tr>{headers_html}</tr></thead>"
+        f"<tbody>{''.join(rows_html_parts)}</tbody>"
+        "</table>"
+        "</div>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+    st.caption(f"Menampilkan {len(df_tampil)} dari {len(df)} catatan riwayat (urutan terbaru di atas).")
 
 
 def render_grafik_historis(df: pd.DataFrame, kuota_pemprov: int) -> None:
@@ -1036,7 +1320,7 @@ def main() -> None:
             mode_text = "Mode Admin Aktif" if st.session_state["is_admin"] else "Akses Publik (Read-Only)"
             st.markdown(
                 f'<div><div class="itc-topbar-title">Pemantauan Keramba Jaring Apung (KJA) Waduk Jatiluhur</div>'
-                f'<div class="itc-topbar-sub">Pemantauan Satelit Siklus 14 Hari &middot; {mode_text}</div></div>',
+                f'<div class="itc-topbar-sub">Komposit Terbaik Multi-Lintasan GEE &middot; {mode_text}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1074,51 +1358,100 @@ def main() -> None:
     # Panel Eksekusi Admin (hanya muncul bila Mode Admin aktif)
     if st.session_state["is_admin"]:
         with st.container(border=True):
-            st.markdown('<div class="itc-section-title">Panel Eksekusi Analisis Berkala (Siklus 14 Hari)</div>', unsafe_allow_html=True)
-            st.markdown(
-                '<div class="itc-section-desc">Menjalankan mesin pemetaan Google Earth Engine (gee_engine.py), validasi visual Gemini 3.8 Flash, dan penyimpanan otomatis ke Google Sheets.</div>',
-                unsafe_allow_html=True,
-            )
+            hd1, hd2 = st.columns([4.4, 1.6], vertical_alignment="center")
+            with hd1:
+                st.markdown('<div class="itc-section-title">Panel Eksekusi Analisis (Daftar Tanggal Terbaik GEE)</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="itc-section-desc">Pilih titik pemantauan T2 (terbaru) dan T1 (pembanding) berdasarkan ketersediaan komposit terbaik di Earth Engine (min. 3 citra S1 multi-lintasan + topeng air S2 dinamis 45 hari).</div>',
+                    unsafe_allow_html=True,
+                )
+            with hd2:
+                if gee_ok and st.button("Segarkan Daftar GEE", type="secondary", use_container_width=True):
+                    muat_daftar_tanggal_terbaik.clear()
+                    st.rerun()
 
-            today = date.today()
-            c1, c2, c3, c4 = st.columns(4)
-            with c1:
-                tgl_akhir_t2 = st.date_input("Tgl Akhir Periode Terbaru (T2)", value=today)
-            with c2:
-                jendela_s1_hari = st.number_input("Jendela Radar S1 (hari)", min_value=7, max_value=30, value=14, step=1)
-            with c3:
-                jendela_s2_hari = st.number_input("Jendela Optik S2 (hari)", min_value=14, max_value=90, value=45, step=1)
-            with c4:
-                jarak_t1_hari = st.number_input("Jarak Periode Lalu T1 (hari)", min_value=7, max_value=30, value=14, step=1)
+            opsi_terbaik: list[dict[str, Any]] = []
+            daftar_err: str | None = None
+            if gee_ok:
+                opsi_terbaik, daftar_err = muat_daftar_tanggal_terbaik()
 
-            t2_akhir_dt = tgl_akhir_t2
-            t2_awal_dt = t2_akhir_dt - timedelta(days=int(jendela_s1_hari) - 1)
-            t1_akhir_dt = t2_akhir_dt - timedelta(days=int(jarak_t1_hari))
-            t1_awal_dt = t1_akhir_dt - timedelta(days=int(jendela_s1_hari) - 1)
-            st.caption(
-                f"Rentang radar T1 (Periode Lalu): {t1_awal_dt.isoformat()} s.d. {t1_akhir_dt.isoformat()} • "
-                f"T2 (Terbaru): {t2_awal_dt.isoformat()} s.d. {t2_akhir_dt.isoformat()}"
-            )
+            t2_selected_str = date.today().isoformat()
+            t1_selected_str = (date.today() - timedelta(days=14)).isoformat()
+
+            if len(opsi_terbaik) >= 2:
+                opsi_map = {item["tanggal"]: item for item in opsi_terbaik}
+                daftar_tgl_t2 = [item["tanggal"] for item in opsi_terbaik[:-1]]
+
+                c_t2, c_t1 = st.columns(2)
+                with c_t2:
+                    t2_selected_str = st.selectbox(
+                        "Periode Terbaru (T2 — Data Terbaik GEE)",
+                        options=daftar_tgl_t2,
+                        index=0,
+                        format_func=lambda t: opsi_map[t]["label"],
+                        key="select_t2_best_date",
+                    )
+
+                kandidat_t1 = [item for item in opsi_terbaik if item["tanggal"] < t2_selected_str]
+                if kandidat_t1:
+                    t2_dt_tmp = date.fromisoformat(t2_selected_str)
+                    idx_t1_default = min(
+                        range(len(kandidat_t1)),
+                        key=lambda i: abs((t2_dt_tmp - date.fromisoformat(kandidat_t1[i]["tanggal"])).days - 21),
+                    )
+                    with c_t1:
+                        t1_selected_str = st.selectbox(
+                            "Periode Pembanding (T1 — Data Terbaik GEE)",
+                            options=[item["tanggal"] for item in kandidat_t1],
+                            index=idx_t1_default,
+                            format_func=lambda t: opsi_map[t]["label"],
+                            key="select_t1_best_date",
+                        )
+
+                info_t2 = opsi_map.get(t2_selected_str, {})
+                info_t1 = opsi_map.get(t1_selected_str, {})
+                selang_hari = (date.fromisoformat(t2_selected_str) - date.fromisoformat(t1_selected_str)).days
+                st.caption(
+                    f"Selang perbandingan T1 \u2192 T2: {selang_hari} hari | "
+                    f"T1: {info_t1.get('jumlah_s1_komposit', '-')} citra S1 (s.d. {info_t1.get('tgl_s1_terakhir', '-')}) & "
+                    f"S2 {info_t1.get('tgl_s2_terakhir', '-')} (awan {info_t1.get('awan_s2_terbaik_persen', '-')}%) | "
+                    f"T2: {info_t2.get('jumlah_s1_komposit', '-')} citra S1 (s.d. {info_t2.get('tgl_s1_terakhir', '-')}) & "
+                    f"S2 {info_t2.get('tgl_s2_terakhir', '-')} (awan {info_t2.get('awan_s2_terbaik_persen', '-')}%)"
+                )
+            else:
+                if daftar_err:
+                    st.warning(f"{daftar_err} Menggunakan pemilih tanggal manual cadangan.")
+                elif gee_ok:
+                    st.warning("Daftar otomatis memiliki kurang dari 2 checkpoint. Pilih tanggal T2 dan T1 secara manual.")
+                c_m1, c_m2 = st.columns(2)
+                with c_m1:
+                    t2_manual = st.date_input("Tgl Akhir Terbaru (T2)", value=date.today())
+                with c_m2:
+                    t1_manual = st.date_input("Tgl Pembanding (T1)", value=date.today() - timedelta(days=21))
+                t2_selected_str = t2_manual.isoformat()
+                t1_selected_str = t1_manual.isoformat()
 
             if not gee_ok:
                 st.error(gee_msg)
 
+            valid_pair = t1_selected_str < t2_selected_str
+            if not valid_pair:
+                st.warning("Tanggal pembanding T1 harus lebih awal daripada tanggal terbaru T2.")
+
             run_clicked = st.button(
                 "Jalankan Analisis & Simpan ke Database",
                 type="primary",
-                disabled=not gee_ok,
+                disabled=(not gee_ok) or (not valid_pair),
             )
 
             if run_clicked:
                 with st.status("Memproses pipeline pemantauan KJA Waduk Jatiluhur...", expanded=True) as status_box:
                     try:
-                        st.write("1/3 Menjalankan mesin pemetaan satelit (gee_engine.py)...")
+                        st.write("1/3 Menjalankan mesin pemetaan satelit komposit terbaik (gee_engine.py)...")
                         hasil_gee = gee_engine.jalankan_analisis_mingguan(
-                            tgl_akhir=tgl_akhir_t2.isoformat(),
+                            tgl_akhir=t2_selected_str,
+                            tgl_pembanding=t1_selected_str,
                             konfigurasi=config,
-                            jendela_s1_hari=int(jendela_s1_hari),
-                            jendela_s2_hari=int(jendela_s2_hari),
-                            jarak_t1_hari=int(jarak_t1_hari),
                             sertakan_detail=True,
                             kredensial=_get_service_account_dict(),
                         )
@@ -1128,7 +1461,15 @@ def main() -> None:
                         layers_peta = hasil_gee.get("layers_peta")
                         detail_gee = hasil_gee.get("detail", {})
 
-                        st.write("2/3 Memvalidasi citra komposit dengan Gemini 3.8 Flash (ai_validator.py)...")
+                        periode_gee = detail_gee.get("periode", {})
+                        t1_s1_range = periode_gee.get("t1", {}).get("s1", [t1_selected_str, t1_selected_str])
+                        t2_s1_range = periode_gee.get("t2", {}).get("s1", [t2_selected_str, t2_selected_str])
+                        t1_awal_str = str(t1_s1_range[0]) if len(t1_s1_range) == 2 else t1_selected_str
+                        t1_akhir_str = str(t1_s1_range[1]) if len(t1_s1_range) == 2 else t1_selected_str
+                        t2_awal_str = str(t2_s1_range[0]) if len(t2_s1_range) == 2 else t2_selected_str
+                        t2_akhir_str = str(t2_s1_range[1]) if len(t2_s1_range) == 2 else t2_selected_str
+
+                        st.write("2/3 Memvalidasi citra komposit dengan Gemini (ai_validator.py)...")
                         hasil_ai = validasi_kja_dengan_ai(
                             url_thumbnail,
                             metrik,
@@ -1142,10 +1483,10 @@ def main() -> None:
                             hasil_ai=hasil_ai,
                             url_thumbnail=url_thumbnail,
                             detail=detail_gee,
-                            t1_awal=t1_awal_dt.isoformat(),
-                            t1_akhir=t1_akhir_dt.isoformat(),
-                            t2_awal=t2_awal_dt.isoformat(),
-                            t2_akhir=t2_akhir_dt.isoformat(),
+                            t1_awal=t1_awal_str,
+                            t1_akhir=t1_akhir_str,
+                            t2_awal=t2_awal_str,
+                            t2_akhir=t2_akhir_str,
                         )
 
                         st.session_state["latest_run_result"] = {
@@ -1365,7 +1706,7 @@ def main() -> None:
 
     # 3. Grafik Tren Historis (Plotly) & Tabel Riwayat Dinamis
     with st.container(border=True):
-        st.markdown('<div class="itc-section-title">Tren Historis Siklus 14 Hari</div>', unsafe_allow_html=True)
+        st.markdown('<div class="itc-section-title">Tren Historis Pemantauan KJA</div>', unsafe_allow_html=True)
         st.markdown(
             '<div class="itc-section-desc">Menyesuaikan otomatis terhadap seluruh kolom metrik numerik yang tercatat pada tab riwayat_mingguan.</div>',
             unsafe_allow_html=True,
@@ -1373,11 +1714,12 @@ def main() -> None:
         render_grafik_historis(df_riwayat, kuota_pemprov)
 
     with st.container(border=True):
-        st.markdown('<div class="itc-section-title">Tabel Riwayat Pemantauan Mingguan</div>', unsafe_allow_html=True)
-        if df_riwayat.empty:
-            st.info("Belum ada baris riwayat di tab riwayat_mingguan.")
-        else:
-            st.dataframe(df_riwayat, use_container_width=True, hide_index=True)
+        st.markdown('<div class="itc-section-title">Tabel Riwayat Pemantauan KJA</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="itc-section-desc">Menampilkan riwayat pemantauan dengan gaya terang, filter status AI, serta unduhan CSV.</div>',
+            unsafe_allow_html=True,
+        )
+        render_tabel_riwayat_terang(df_riwayat)
 
 
 if __name__ == "__main__":
