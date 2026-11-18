@@ -46,6 +46,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 SPREADSHEET_DEFAULT_NAME = "Monitoring_KJA_Jatiluhur"
 TAB_KONFIGURASI = "konfigurasi"
 TAB_RIWAYAT = "riwayat_mingguan"
+QUALITY_GATE_MAX_DELTA_HA = 25.0
 
 # Fallback header 24 kolom (A1:X1) hanya digunakan jika tab riwayat_mingguan benar-benar kosong
 STANDARD_RIWAYAT_HEADERS = [
@@ -198,6 +199,8 @@ html, body, .stApp {{
 /* Paksa tampilan terang bersih pada input, select, dan label form Streamlit */
 [data-testid="stWidgetLabel"] p,
 [data-testid="stWidgetLabel"] label,
+[data-testid="stCheckbox"] label,
+[data-testid="stCheckbox"] p,
 .stMarkdown p,
 .stMarkdown h1,
 .stMarkdown h2,
@@ -1020,8 +1023,82 @@ def render_kpi_dinamis(
     st.markdown(f'<div class="itc-kpi-grid">{"".join(cards_html)}</div>', unsafe_allow_html=True)
 
 
+def saring_riwayat_kualitas_terbaik(
+    df: pd.DataFrame,
+    batas_delta_ha: float = QUALITY_GATE_MAX_DELTA_HA,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Menerapkan Quality Gate pada tabel riwayat_mingguan:
+    - Baris lolos bila status_validasi_ai == 'Valid' DAN
+      (merupakan baris pertama historis ATAU |delta_luas_ha| <= 25,0 Ha).
+    Mengembalikan (df_terkurasi, df_arsip_anomali, df_beranotasi).
+    """
+    if df.empty:
+        kosong = df.copy()
+        kosong_anot = df.copy()
+        kosong_anot["_lolos_kurasi"] = pd.Series(dtype=bool)
+        kosong_anot["_alasan_kurasi"] = pd.Series(dtype=str)
+        return kosong, kosong.copy(), kosong_anot
+
+    df_clean = df.reset_index(drop=True).copy()
+    lolos_flags: list[bool] = []
+    alasan_list: list[str] = []
+    prev_luas_val: float | None = None
+
+    for idx in range(len(df_clean)):
+        row = df_clean.iloc[idx]
+        status_ai = str(row.get("status_validasi_ai", "")).strip().lower()
+        ai_valid = status_ai == "valid"
+
+        raw_luas = row.get("luas_bersih_ha")
+        curr_luas: float | None = None
+        if raw_luas not in (None, "") and not pd.isna(raw_luas):
+            try:
+                curr_luas = _parse_id_float(raw_luas)
+            except (TypeError, ValueError):
+                curr_luas = None
+
+        raw_delta = row.get("delta_luas_ha")
+        delta_val: float | None = None
+        if raw_delta not in (None, "") and not pd.isna(raw_delta):
+            try:
+                delta_val = _parse_id_float(raw_delta)
+            except (TypeError, ValueError):
+                delta_val = None
+        elif idx > 0 and curr_luas is not None and prev_luas_val is not None:
+            delta_val = round(curr_luas - prev_luas_val, 2)
+
+        if curr_luas is not None:
+            prev_luas_val = curr_luas
+
+        is_first = idx == 0
+        delta_ok = is_first or (delta_val is not None and abs(delta_val) <= batas_delta_ha)
+
+        alasan_items: list[str] = []
+        if not ai_valid:
+            status_asli = str(row.get("status_validasi_ai", "Perlu dicek")).strip() or "Kosong"
+            alasan_items.append(f"Status AI {status_asli}")
+        if not is_first:
+            if delta_val is None:
+                alasan_items.append("Delta luas tidak tersedia")
+            elif abs(delta_val) > batas_delta_ha:
+                alasan_items.append(f"Lonjakan {delta_val:+.2f} Ha (> {batas_delta_ha:.0f} Ha)")
+
+        lolos = ai_valid and delta_ok
+        lolos_flags.append(lolos)
+        alasan_list.append("Terbaik" if lolos else "Arsip Anomali: " + "; ".join(alasan_items))
+
+    mask_series = pd.Series(lolos_flags, index=df_clean.index)
+    df_terkurasi = df_clean[mask_series].reset_index(drop=True)
+    df_arsip = df_clean[~mask_series].reset_index(drop=True)
+    df_beranotasi = df_clean.copy()
+    df_beranotasi["_lolos_kurasi"] = lolos_flags
+    df_beranotasi["_alasan_kurasi"] = alasan_list
+    return df_terkurasi, df_arsip, df_beranotasi
+
+
 def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
-    """Menampilkan kotak informasi metodologi terkalibrasi dinamis + penjelasan T1 & T2."""
+    """Menampilkan kotak informasi metodologi terkalibrasi dinamis + keterangan Quality Gate."""
     tahun_kalibrasi = int(config.get("tahun_kalibrasi", 2026))
     sensus_petak = _fmt_int(config.get("sensus_petak", config.get("sensus_petak_2026", 49807)))
     sensus_ha = _fmt_float(config.get("sensus_luas_ha", config.get("sensus_luas_ha_2026", 249.04)), 2)
@@ -1035,28 +1112,32 @@ def render_disclaimer_metodologi(config: dict[str, Any]) -> None:
         'Catatan Metodologi &amp; Kalibrasi Penginderaan Jauh'
         '</div>'
         '<div style="font-size: 12.5px; color: #64748B; line-height: 1.55;">'
-        'Angka jumlah petak dan luasan KJA merupakan hasil estimasi komposit terbaik '
-        '<strong>Sentinel-1 SAR multi-lintasan (minimal 3&ndash;4 citra dalam jendela hingga 28 hari)</strong> dan '
-        '<strong>Sentinel-2 optik (penapisan eceng gondok &amp; topeng tepian surut dinamis MNDWI/SWIR 45 hari)</strong> '
+        '<strong>Pembaruan Terkurasi (Siklus 12&ndash;24 Hari / Lintasan Pagi Sentinel-1 &amp; Optik Bebas Awan).</strong> '
+        'Angka jumlah petak dan luasan KJA merupakan hasil estimasi fusi satelit '
+        '<strong>Sentinel-1 SAR</strong> dan <strong>Sentinel-2 optik (penapisan eceng gondok &amp; topeng tepian surut dinamis)</strong> '
         f'yang telah terkalibrasi terhadap data sensus lapangan tahun <strong>{tahun_kalibrasi}</strong> sebesar '
         f'<strong>{sensus_petak} petak ({sensus_ha} Ha)</strong> '
-        f'dengan tingkat akurasi empiris ~99% (asumsi luasan efektif per petak {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;). '
-        'Pada setiap perbandingan, <strong>T1 adalah titik waktu pembanding sebelumnya</strong> dan '
-        '<strong>T2 adalah titik waktu pemantauan terbaru</strong> yang dipilih berdasarkan ketersediaan data terbaik di GEE (mis. selang 14 atau ~30 hari). '
-        'Dasbor ini berfungsi sebagai <strong>sistem peringatan dini (early warning system)</strong> untuk mendukung verifikasi patroli pengawas Waduk Jatiluhur.'
+        f'dengan tingkat akurasi empiris ~99% (luasan efektif {luas_min}&ndash;{luas_maks} m&sup2;, nilai tengah {luas_tengah} m&sup2;). '
+        'Sistem secara otomatis menyaring anomali cuaca musim hujan melalui aturan <strong>Quality Gate</strong> '
+        '(hanya periode berstatus <strong>Valid</strong> dengan perubahan luas wajar <strong>&le; 25,0 Ha</strong> yang tampil pada dasbor utama dan grafik tren), '
+        'sementara periode anomali tetap tersimpan sebagai arsip di Google Sheets agar pembaca terhindar dari lonjakan palsu.'
         '</div>'
         '</div>'
     )
     st.markdown(html_disclaimer, unsafe_allow_html=True)
 
 
-def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
-    """Merender tabel riwayat pemantauan bertema putih terang bergaya ITC lengkap dengan filter dan unduh CSV."""
-    if df.empty:
+def render_tabel_riwayat_terang(
+    df_semua: pd.DataFrame,
+    df_beranotasi: pd.DataFrame,
+    jumlah_arsip: int,
+) -> None:
+    """Merender tabel riwayat pemantauan bertema putih terang dengan penyaringan Quality Gate dan tombol arsip."""
+    if df_semua.empty:
         st.info("Belum ada baris riwayat di tab riwayat_mingguan.")
         return
 
-    fc1, fc2, fc3 = st.columns([2.5, 1.3, 1.2], vertical_alignment="bottom")
+    fc1, fc2, fc3, fc4 = st.columns([2.2, 1.2, 1.3, 1.2], vertical_alignment="bottom")
     with fc1:
         cari_teks = st.text_input(
             "Cari riwayat",
@@ -1071,7 +1152,19 @@ def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
             key="riwayat_status_filter",
         )
     with fc3:
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        tampilkan_arsip = st.toggle(
+            f"Tampilkan Arsip Anomali ({jumlah_arsip})",
+            value=False,
+            key="riwayat_show_archive",
+        )
+    with fc4:
+        df_base_export = (
+            df_beranotasi
+            if tampilkan_arsip
+            else df_beranotasi[df_beranotasi["_lolos_kurasi"]]
+        )
+        export_cols = [c for c in df_semua.columns if c in df_base_export.columns]
+        csv_bytes = df_base_export[export_cols].to_csv(index=False).encode("utf-8")
         st.download_button(
             "Unduh CSV Riwayat",
             data=csv_bytes,
@@ -1080,7 +1173,10 @@ def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
             use_container_width=True,
         )
 
-    df_tampil = df.copy()
+    df_tampil = df_beranotasi.copy()
+    if not tampilkan_arsip:
+        df_tampil = df_tampil[df_tampil["_lolos_kurasi"]]
+
     if filter_status != "Semua" and "status_validasi_ai" in df_tampil.columns:
         df_tampil = df_tampil[
             df_tampil["status_validasi_ai"].astype(str).str.strip().str.lower()
@@ -1094,11 +1190,20 @@ def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
         df_tampil = df_tampil[mask_cari]
 
     if df_tampil.empty:
-        st.info("Tidak ada baris riwayat yang cocok dengan kata kunci atau filter status.")
+        if not tampilkan_arsip and jumlah_arsip > 0:
+            st.info(
+                f"Belum ada periode yang lolos Quality Gate sesuai filter saat ini. "
+                f"Aktifkan 'Tampilkan Arsip Anomali ({jumlah_arsip})' untuk melihat arsip cuaca."
+            )
+        else:
+            st.info("Tidak ada baris riwayat yang cocok dengan kata kunci atau filter status.")
         return
 
     # Tampilkan urutan terbaru di paling atas
     df_tampil = df_tampil.iloc[::-1].reset_index(drop=True)
+
+    kolom_asli = [c for c in df_semua.columns if not str(c).startswith("_")]
+    tampil_kolom = (["status_kurasi"] + kolom_asli) if tampilkan_arsip else kolom_asli
 
     kolom_mono = {
         "minggu_id",
@@ -1135,12 +1240,22 @@ def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
     }
     kolom_float_fmt = {"luas_bersih_ha", "delta_luas_ha"}
 
-    headers_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in df_tampil.columns)
+    headers_html = "".join(f"<th>{html.escape(str(col))}</th>" for col in tampil_kolom)
     rows_html_parts: list[str] = []
 
     for _, row in df_tampil.iterrows():
         cells: list[str] = []
-        for col in df_tampil.columns:
+        for col in tampil_kolom:
+            if col == "status_kurasi":
+                lolos = bool(row.get("_lolos_kurasi", False))
+                alasan = str(row.get("_alasan_kurasi", ""))
+                badge_cls = "status-valid" if lolos else "status-check"
+                badge_txt = "Terkurasi" if lolos else "Arsip Anomali"
+                cells.append(
+                    f'<td title="{html.escape(alasan, quote=True)}"><span class="status-badge {badge_cls}">{badge_txt}</span></td>'
+                )
+                continue
+
             val = row[col]
             raw_str = "" if pd.isna(val) else str(val).strip()
             col_lower = str(col).strip().lower()
@@ -1199,7 +1314,14 @@ def render_tabel_riwayat_terang(df: pd.DataFrame) -> None:
         "</div>"
     )
     st.markdown(table_html, unsafe_allow_html=True)
-    st.caption(f"Menampilkan {len(df_tampil)} dari {len(df)} catatan riwayat (urutan terbaru di atas).")
+    if tampilkan_arsip:
+        st.caption(
+            f"Menampilkan {len(df_tampil)} dari {len(df_semua)} total catatan (termasuk {jumlah_arsip} arsip anomali cuaca, urutan terbaru di atas)."
+        )
+    else:
+        st.caption(
+            f"Menampilkan {len(df_tampil)} periode kualitas terbaik ({jumlah_arsip} arsip anomali disembunyikan; urutan terbaru di atas)."
+        )
 
 
 def render_grafik_historis(df: pd.DataFrame, kuota_pemprov: int) -> None:
@@ -1311,6 +1433,7 @@ def main() -> None:
     gee_ok, gee_msg = init_earth_engine()
     config, config_warn = muat_konfigurasi_sheets()
     df_riwayat, sheets_err = muat_riwayat_sheets()
+    df_terkurasi, df_arsip_anomali, df_beranotasi = saring_riwayat_kualitas_terbaik(df_riwayat)
     kuota_pemprov = int(config.get("kuota_petak_pemprov", 11306))
 
     # Top bar putih minimalis terpadu (judul di kiri, kontrol Mode Admin biru lembut #2563EB di kanan)
@@ -1320,7 +1443,7 @@ def main() -> None:
             mode_text = "Mode Admin Aktif" if st.session_state["is_admin"] else "Akses Publik (Read-Only)"
             st.markdown(
                 f'<div><div class="itc-topbar-title">Pemantauan Keramba Jaring Apung (KJA) Waduk Jatiluhur</div>'
-                f'<div class="itc-topbar-sub">Komposit Terbaik Multi-Lintasan GEE &middot; {mode_text}</div></div>',
+                f'<div class="itc-topbar-sub">Pembaruan Terkurasi (Siklus 12&ndash;24 Hari / Lintasan Pagi Sentinel-1 &amp; Optik Bebas Awan) &middot; {mode_text}</div></div>',
                 unsafe_allow_html=True,
             )
 
@@ -1489,12 +1612,29 @@ def main() -> None:
                             t2_akhir=t2_akhir_str,
                         )
 
+                        perubahan_run = detail_gee.get("perubahan", {})
+                        delta_luas_run = _to_float_safe(
+                            perubahan_run.get("selisih_luas_ha", metrik.get("delta_luas_ha")),
+                            0.0,
+                        )
+                        status_run = str(hasil_ai.get("status_validasi_ai", "Perlu dicek")).strip()
+                        alasan_gate_run: list[str] = []
+                        if status_run.lower() != "valid":
+                            alasan_gate_run.append(f"status validasi AI '{status_run}'")
+                        if not df_riwayat.empty and abs(delta_luas_run) > QUALITY_GATE_MAX_DELTA_HA:
+                            alasan_gate_run.append(
+                                f"perubahan luas {delta_luas_run:+.2f} Ha melebihi batas wajar ±{QUALITY_GATE_MAX_DELTA_HA:.0f} Ha"
+                            )
+                        lolos_gate_run = len(alasan_gate_run) == 0
+
                         st.session_state["latest_run_result"] = {
                             "metrik": metrik,
                             "url_thumbnail": url_thumbnail,
                             "layers_peta": layers_peta,
                             "detail": detail_gee,
                             "ai": hasil_ai,
+                            "lolos_quality_gate": lolos_gate_run,
+                            "alasan_quality_gate": "; ".join(alasan_gate_run),
                         }
                         status_box.update(label="Analisis selesai dan tersimpan ke database.", state="complete")
                         st.rerun()
@@ -1560,16 +1700,24 @@ def main() -> None:
                     except Exception as exc:
                         st.error(f"Gagal menyimpan pembaruan sensus ke tab konfigurasi: {exc}")
 
-    # Menentukan sumber data periode aktif untuk ditampilkan (hasil run terbaru atau baris terakhir Google Sheets)
+    # Menentukan sumber data periode aktif (Quality Gate: hanya baris Valid & |delta_luas_ha| <= 25 Ha)
     active_run = st.session_state.get("latest_run_result")
-    latest_sheet_row: dict[str, Any] = df_riwayat.iloc[-1].to_dict() if not df_riwayat.empty else {}
+    latest_sheet_row: dict[str, Any] = df_terkurasi.iloc[-1].to_dict() if not df_terkurasi.empty else {}
+    admin_archive_notice: str | None = None
+    no_curated_notice: str | None = None
 
-    if active_run:
+    if active_run and st.session_state["is_admin"]:
         active_metrik = active_run["metrik"]
         active_ai = active_run["ai"]
         active_thumb = active_run["url_thumbnail"]
         active_layers = active_run.get("layers_peta")
         active_detail = active_run.get("detail")
+        if not active_run.get("lolos_quality_gate", True):
+            alasan_txt = active_run.get("alasan_quality_gate") or "tidak memenuhi ambang Quality Gate"
+            admin_archive_notice = (
+                "Peringatan Arsip Quality Gate (Pratinjau Sesi Admin): Hasil eksekusi ini telah disimpan ke tab "
+                f"riwayat_mingguan Google Sheets sebagai arsip, namun disaring dari grafik tren dan tampilan publik utama karena {alasan_txt}."
+            )
     elif latest_sheet_row:
         active_metrik = {
             k: v
@@ -1605,8 +1753,13 @@ def main() -> None:
         active_layers = None
         active_detail = None
     else:
+        if not df_riwayat.empty and df_terkurasi.empty:
+            no_curated_notice = (
+                f"Seluruh {len(df_riwayat)} catatan di tab riwayat_mingguan saat ini ditandai sebagai arsip anomali "
+                "(status bukan Valid atau |delta_luas_ha| > 25,0 Ha). Aktifkan 'Tampilkan Arsip Anomali' di tabel riwayat untuk meninjaunya."
+            )
         active_metrik = {
-            "minggu_id": "Belum ada data",
+            "minggu_id": "Belum ada data terkurasi" if not df_riwayat.empty else "Belum ada data",
             "tgl_citra_s1": "-",
             "tgl_citra_s2": "-",
             "jumlah_klaster": 0,
@@ -1618,9 +1771,12 @@ def main() -> None:
         }
         active_ai = {
             "status_validasi_ai": "Perlu dicek",
-            "analisis_pola": "Belum ada siklus analisis yang tersimpan di Google Sheets. Aktifkan Mode Admin untuk menjalankan siklus pertama.",
+            "analisis_pola": (
+                no_curated_notice
+                or "Belum ada siklus analisis yang tersimpan di Google Sheets. Aktifkan Mode Admin untuk menjalankan siklus pemantauan."
+            ),
             "rekomendasi_pengawasan": [
-                "Masuk ke Mode Admin dan pilih Tanggal Akhir T2 serta jendela analisis.",
+                "Masuk ke Mode Admin dan pilih titik pemantauan T2 serta T1 terbaik dari daftar GEE.",
                 "Klik tombol Jalankan Analisis & Simpan ke Database.",
                 "Verifikasi hasil estimasi petak terhadap kuota 11.306 petak.",
             ],
@@ -1629,7 +1785,7 @@ def main() -> None:
         active_layers = None
         active_detail = None
 
-    # 1. Kartu Metrik KPI Dinamis + Disclaimer Metodologi + Peringatan Kualitas Citra (bila ada)
+    # 1. Kartu Metrik KPI Dinamis + Disclaimer Metodologi + Peringatan Quality Gate / Kualitas Citra
     render_kpi_dinamis(
         active_metrik,
         active_ai.get("status_validasi_ai", "Perlu dicek"),
@@ -1637,6 +1793,16 @@ def main() -> None:
         detail=active_detail,
     )
     render_disclaimer_metodologi(config)
+
+    if admin_archive_notice:
+        st.warning(admin_archive_notice)
+    elif no_curated_notice:
+        st.info(no_curated_notice)
+    elif not df_arsip_anomali.empty:
+        st.caption(
+            f"Quality Gate aktif: {len(df_terkurasi)} periode terkurasi ditampilkan; "
+            f"{len(df_arsip_anomali)} periode anomali cuaca/hujan disimpan di arsip tab riwayat_mingguan."
+        )
 
     if active_detail:
         peringatan_list = active_detail.get("peringatan", [])
@@ -1704,22 +1870,25 @@ def main() -> None:
             for idx, rek in enumerate(rekomendasi_list, start=1):
                 st.markdown(f"{idx}. {rek}")
 
-    # 3. Grafik Tren Historis (Plotly) & Tabel Riwayat Dinamis
+    # 3. Grafik Tren Historis (Plotly - hanya periode lolos Quality Gate) & Tabel Riwayat Dinamis
     with st.container(border=True):
-        st.markdown('<div class="itc-section-title">Tren Historis Pemantauan KJA</div>', unsafe_allow_html=True)
+        st.markdown('<div class="itc-section-title">Tren Historis Pemantauan Terkurasi</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="itc-section-desc">Menyesuaikan otomatis terhadap seluruh kolom metrik numerik yang tercatat pada tab riwayat_mingguan.</div>',
+            '<div class="itc-section-desc">Menampilkan tren periode kualitas terbaik (status Valid &amp; |delta_luas_ha| &le; 25,0 Ha) sesuai kolom numerik pada tab riwayat_mingguan.</div>',
             unsafe_allow_html=True,
         )
-        render_grafik_historis(df_riwayat, kuota_pemprov)
+        if df_terkurasi.empty and not df_riwayat.empty:
+            st.info("Grafik tren belum ditampilkan karena seluruh baris tersimpan saat ini berstatus arsip anomali.")
+        else:
+            render_grafik_historis(df_terkurasi, kuota_pemprov)
 
     with st.container(border=True):
         st.markdown('<div class="itc-section-title">Tabel Riwayat Pemantauan KJA</div>', unsafe_allow_html=True)
         st.markdown(
-            '<div class="itc-section-desc">Menampilkan riwayat pemantauan dengan gaya terang, filter status AI, serta unduhan CSV.</div>',
+            '<div class="itc-section-desc">Menampilkan periode terkurasi terbaik secara default; aktifkan sakelar arsip untuk meninjau periode anomali cuaca tersimpan.</div>',
             unsafe_allow_html=True,
         )
-        render_tabel_riwayat_terang(df_riwayat)
+        render_tabel_riwayat_terang(df_riwayat, df_beranotasi, len(df_arsip_anomali))
 
 
 if __name__ == "__main__":
